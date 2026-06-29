@@ -634,7 +634,7 @@ function AudioSegmentPanel({
         <div>
           <div className="text-sm font-semibold text-zinc-950">Notion 音频分段</div>
           <div className="mt-1 text-xs text-zinc-500">
-            每个 Segment 都是独立 Notion 子任务，音频文件在对应页面上传。
+            每个 Segment 都是独立 Notion 子任务，音频在对应页面上传区处理。
           </div>
         </div>
         <Badge className="border-[#b6ff4a] bg-[#eaffc8] text-[#1c3b00]">

@@ -94,33 +94,36 @@ function plainText(
     .trim() ?? "";
 }
 
-function richTextPropertyText(property: unknown) {
+function statusPropertyName(property: unknown) {
   if (
     property &&
     typeof property === "object" &&
     "type" in property &&
-    property.type === "rich_text" &&
-    "rich_text" in property &&
-    Array.isArray(property.rich_text)
+    property.type === "status" &&
+    "status" in property &&
+    property.status &&
+    typeof property.status === "object" &&
+    "name" in property.status &&
+    typeof property.status.name === "string"
   ) {
-    return plainText(property.rich_text);
+    return property.status.name;
+  }
+
+  if (
+    property &&
+    typeof property === "object" &&
+    "type" in property &&
+    property.type === "select" &&
+    "select" in property &&
+    property.select &&
+    typeof property.select === "object" &&
+    "name" in property.select &&
+    typeof property.select.name === "string"
+  ) {
+    return property.select.name;
   }
 
   return "";
-}
-
-function checkboxPropertyValue(property: unknown) {
-  if (
-    property &&
-    typeof property === "object" &&
-    "type" in property &&
-    property.type === "checkbox" &&
-    "checkbox" in property
-  ) {
-    return Boolean(property.checkbox);
-  }
-
-  return false;
 }
 
 function blockText(block: unknown) {
@@ -162,6 +165,21 @@ function isManagedStepText(text: string) {
     text.startsWith("归属大任务：") ||
     text.startsWith("父任务 Notion page id：")
   );
+}
+
+function extractMarkedScript(text: string) {
+  const startMarker = ">>> 文案开始";
+  const endMarker = ">>> 文案结束";
+  const startIndex = text.indexOf(startMarker);
+  const endIndex = text.indexOf(endMarker);
+
+  if (startIndex === -1 || endIndex === -1 || endIndex <= startIndex) {
+    return "";
+  }
+
+  return text
+    .slice(startIndex + startMarker.length, endIndex)
+    .replace(/^\s+|\s+$/g, "");
 }
 
 function notionPageUrl(pageId: string) {
@@ -665,7 +683,7 @@ async function appendAudioSegmentIndex({
         type: "paragraph",
         paragraph: {
           rich_text: richText(
-            `已根据文案自动拆分为 ${segments.length} 个音频段落。请进入每个 Segment 页面，在 Notion 的音频文件字段或页面附件中上传对应音频。`,
+            `已根据文案自动拆分为 ${segments.length} 个音频段落。请进入每个 Segment 页面，在页面上传区上传或嵌入对应音频。`,
           ).rich_text,
         },
       },
@@ -978,12 +996,14 @@ export async function getScriptApprovalFromNotion(pageId: string): Promise<
       "properties" in page
         ? (page.properties as Record<string, unknown>)
         : {};
-    const approvedPropertyName =
-      process.env.NOTION_SCRIPT_APPROVED_PROPERTY ?? "文案已确认";
-    const scriptPropertyName =
-      process.env.NOTION_SCRIPT_TEXT_PROPERTY ?? "文案正文";
-    const approved = checkboxPropertyValue(properties[approvedPropertyName]);
-    const scriptPropertyText = richTextPropertyText(properties[scriptPropertyName]);
+    const statusPropertyNameForApproval =
+      process.env.NOTION_STATUS_PROPERTY ?? "Status";
+    const doneStatusName =
+      process.env.NOTION_SCRIPT_APPROVED_STATUS ?? "Done";
+    const currentStatus = statusPropertyName(
+      properties[statusPropertyNameForApproval],
+    );
+    const approved = currentStatus.toLowerCase() === doneStatusName.toLowerCase();
     const blockTexts: string[] = [];
     let startCursor: string | undefined;
 
@@ -1008,7 +1028,7 @@ export async function getScriptApprovalFromNotion(pageId: string): Promise<
     return {
       state: "ready",
       approved,
-      scriptText: scriptPropertyText || blockTexts.join("\n\n").trim(),
+      scriptText: extractMarkedScript(blockTexts.join("\n\n")),
     };
   } catch (error) {
     return {
@@ -1054,11 +1074,6 @@ export async function publishAudioSegmentsToNotion({
       assignees.find((item) => item.notionUserId === targetStep.assigneeId) ??
       getFallbackAssignee(targetStep.assigneeId ?? task.assigneeId);
     const segmentPageIds: Record<string, string> = {};
-    const filesProperty = findProperty(
-      schema,
-      process.env.NOTION_AUDIO_FILES_PROPERTY ?? "音频文件",
-      "files",
-    );
 
     for (const segment of segments) {
       const segmentProperties = buildPageProperties({
@@ -1078,16 +1093,7 @@ export async function publishAudioSegmentsToNotion({
         parent: {
           data_source_id: schema.dataSourceId,
         },
-        properties: {
-          ...segmentProperties,
-          ...(filesProperty
-            ? {
-                [filesProperty]: {
-                  files: [],
-                },
-              }
-            : {}),
-        },
+        properties: segmentProperties,
         children: [
           {
             object: "block",
@@ -1105,10 +1111,25 @@ export async function publishAudioSegmentsToNotion({
           },
           {
             object: "block",
+            type: "heading_3",
+            heading_3: {
+              rich_text: richText("上传区").rich_text,
+            },
+          },
+          {
+            object: "block",
+            type: "callout",
+            callout: {
+              rich_text: richText("在这里输入 /upload，或直接拖入本段音频文件。").rich_text,
+              color: "gray_background",
+            },
+          },
+          {
+            object: "block",
             type: "to_do",
             to_do: {
               checked: false,
-              rich_text: richText("上传本段音频到 Notion 的音频文件字段或本页附件。").rich_text,
+              rich_text: richText("音频已上传").rich_text,
             },
           },
           {

@@ -32,11 +32,11 @@
 
 文案确认自动化：
 
-- 在 Notion 的“文案生成”子任务上勾选 `文案已确认`。
+- 在 Notion 的“文案生成”子任务上把 `Status` 改成 `Done`。
 - Notion webhook 请求 `POST /api/notion/webhook`。
-- App 读取该 Notion 页面里的 `文案正文` 字段；如果字段为空，则读取页面正文块。
+- App 读取该 Notion 页面正文里 `>>> 文案开始` 和 `>>> 文案结束` 之间的文案。
 - App 自动拆分文案，并在 Notion 里生成多个 `音频 01｜...` 子任务。
-- 团队成员进入每个音频 Segment 子任务，在 Notion 的 `音频文件` Files 字段或页面附件里上传音频。
+- 团队成员进入每个音频 Segment 子任务，在页面上传区输入 `/upload` 或直接拖入音频文件。
 - MongoDB 只保存任务、分段、Notion page id、幂等 hash，不保存音频文件。
 
 删除大任务时：
@@ -68,6 +68,7 @@ NOTION_TOKEN=secret_xxx
 NOTION_DATABASE_ID=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 MONGODB_URI=mongodb://127.0.0.1:27017/notion-task-helper
 MONGODB_DB=notion_task_helper
+MONGODB_SEED_DEMO_TASKS=false
 WEBHOOK_ADMIN_SECRET=生成一个长随机字符串
 DEFAULT_ASSIGNEE_ID=owner
 NOTION_GUEST_USER_IDS=
@@ -82,17 +83,23 @@ NOTION_GUEST_USER_IDS=
 - `Due Date`: date
 - `Steps`: rich text
 - `Local Task ID`: rich text
-- `文案已确认`: checkbox
-- `文案正文`: rich text
-- `音频文件`: files
 
 字段名可在 `.env.local` 里用 `NOTION_*_PROPERTY` 调整。
 
 文案自动化相关字段：
 
-- `NOTION_SCRIPT_APPROVED_PROPERTY`: 默认 `文案已确认`
-- `NOTION_SCRIPT_TEXT_PROPERTY`: 默认 `文案正文`
-- `NOTION_AUDIO_FILES_PROPERTY`: 默认 `音频文件`
+- `NOTION_STATUS_PROPERTY`: 默认 `Status`
+- `NOTION_SCRIPT_APPROVED_STATUS`: 默认 `Done`
+
+文案生成页正文需要使用这个格式：
+
+```txt
+>>> 文案开始
+
+这里写完整文案。
+
+>>> 文案结束
+```
 
 部署到 Vercel 后，把 Notion webhook endpoint 配成：
 

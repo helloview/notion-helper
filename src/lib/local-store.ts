@@ -555,7 +555,7 @@ export async function generateAudioSegmentsFromScriptStep({
       if (step.id === targetStep.id) {
         return {
           ...step,
-          description: `已根据文案生成 ${segmentsWithNotion.length} 个音频分段；音频文件请在 Notion 对应分段任务中上传。`,
+          description: `已根据文案生成 ${segmentsWithNotion.length} 个音频分段；音频请在 Notion 对应分段页面的上传区处理。`,
           generatedFromStepId: sourceStep.id,
           sourceScriptHash,
           audioSegments: segmentsWithNotion,
