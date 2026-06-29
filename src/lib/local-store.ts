@@ -97,6 +97,10 @@ function stripMongoId(document: WithId<TaskDocument> | TaskDocument): Task {
 }
 
 async function ensureSeedTask(collection: Collection<TaskDocument>) {
+  if (process.env.MONGODB_SEED_DEMO_TASKS !== "true") {
+    return;
+  }
+
   const count = await collection.estimatedDocumentCount();
 
   if (count === 0) {
