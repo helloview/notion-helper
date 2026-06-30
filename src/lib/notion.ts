@@ -28,9 +28,9 @@ type StepPublishResult =
   | { state: "published"; stepPageIds: Record<string, string> }
   | { state: "failed"; error: string };
 
-type AudioSegmentPublishResult =
+type SegmentWorkflowPublishResult =
   | { state: "not_configured" }
-  | { state: "published"; segmentPageIds: Record<string, string> }
+  | { state: "published" }
   | { state: "failed"; error: string };
 
 type NotionUserLike = {
@@ -624,8 +624,9 @@ async function replaceStepPageContent({
   });
 }
 
-async function archiveManagedAudioSegmentBlocks(notion: Client, pageId: string) {
+async function archiveManagedSegmentWorkflowBlocks(notion: Client, pageId: string) {
   let startCursor: string | undefined;
+  let isInsideManagedWorkflow = false;
 
   do {
     const response = await notion.blocks.children.list({
@@ -638,10 +639,20 @@ async function archiveManagedAudioSegmentBlocks(notion: Client, pageId: string) 
       if (!("type" in block)) continue;
 
       const text = blockText(block);
+      const startsManagedWorkflow =
+        block.type === "heading_2" &&
+        ["文案分段工作区", "音频分段任务", "素材分段任务"].includes(text);
+      isInsideManagedWorkflow = isInsideManagedWorkflow || startsManagedWorkflow;
       const shouldArchive =
+        isInsideManagedWorkflow ||
+        text === "文案分段工作区" ||
         text === "音频分段任务" ||
+        text === "素材分段任务" ||
         text.startsWith("已根据文案自动拆分") ||
-        text.startsWith("Segment ");
+        text.startsWith("Segment ") ||
+        text.startsWith("[段落") ||
+        text.startsWith("上传或嵌入本段音频") ||
+        text.startsWith("为本段收集");
 
       if (shouldArchive) {
         await notion.blocks.update({
@@ -655,18 +666,92 @@ async function archiveManagedAudioSegmentBlocks(notion: Client, pageId: string) 
   } while (startCursor);
 }
 
-async function appendAudioSegmentIndex({
+function audioSegmentBlocks(segments: AudioSegment[]) {
+  return segments.flatMap((segment) => [
+    {
+      object: "block" as const,
+      type: "heading_2" as const,
+      heading_2: {
+        rich_text: richText(`[段落${segment.index}]`).rich_text,
+      },
+    },
+    {
+      object: "block" as const,
+      type: "divider" as const,
+      divider: {},
+    },
+    {
+      object: "block" as const,
+      type: "callout" as const,
+      callout: {
+        rich_text: richText("上传或嵌入本段音频：在下一行输入 /upload，或直接拖入音频文件。").rich_text,
+        color: "gray_background" as const,
+      },
+    },
+    {
+      object: "block" as const,
+      type: "paragraph" as const,
+      paragraph: {
+        rich_text: richText(segment.text).rich_text,
+      },
+    },
+    {
+      object: "block" as const,
+      type: "divider" as const,
+      divider: {},
+    },
+  ]);
+}
+
+function materialSegmentBlocks(segments: AudioSegment[]) {
+  return segments.flatMap((segment) => [
+    {
+      object: "block" as const,
+      type: "heading_2" as const,
+      heading_2: {
+        rich_text: richText(`[段落${segment.index}]`).rich_text,
+      },
+    },
+    {
+      object: "block" as const,
+      type: "divider" as const,
+      divider: {},
+    },
+    {
+      object: "block" as const,
+      type: "callout" as const,
+      callout: {
+        rich_text: richText("为本段收集画面、图片、B-roll、参考链接或素材文件。").rich_text,
+        color: "gray_background" as const,
+      },
+    },
+    {
+      object: "block" as const,
+      type: "paragraph" as const,
+      paragraph: {
+        rich_text: richText(segment.text).rich_text,
+      },
+    },
+    {
+      object: "block" as const,
+      type: "divider" as const,
+      divider: {},
+    },
+  ]);
+}
+
+async function replaceStepWithSegmentWorkflow({
   notion,
   pageId,
   segments,
-  segmentPageIds,
+  mode,
 }: {
   notion: Client;
   pageId: string;
   segments: AudioSegment[];
-  segmentPageIds: Record<string, string>;
+  mode: "audio" | "material";
 }) {
-  await archiveManagedAudioSegmentBlocks(notion, pageId);
+  await archiveManagedSegmentWorkflowBlocks(notion, pageId);
 
   await notion.blocks.children.append({
     block_id: pageId,
@@ -675,7 +760,7 @@ async function appendAudioSegmentIndex({
         object: "block",
         type: "heading_2",
         heading_2: {
-          rich_text: richText("音频分段任务").rich_text,
+          rich_text: richText("文案分段工作区").rich_text,
         },
       },
       {
@@ -683,24 +768,13 @@ async function appendAudioSegmentIndex({
         type: "paragraph",
         paragraph: {
           rich_text: richText(
-            `已根据文案自动拆分为 ${segments.length} 个音频段落。请进入每个 Segment 页面，在页面上传区上传或嵌入对应音频。`,
+            `已根据文案自动拆分为 ${segments.length} 个段落。${mode === "audio" ? "每段下方处理对应音频。" : "每段下方收集对应素材。"}`,
           ).rich_text,
         },
       },
-      ...segments.map((segment) => {
-        const pageId = segmentPageIds[segment.id];
-        const label = `Segment ${String(segment.index).padStart(2, "0")} · ${segment.text.slice(0, 42)}`;
-
-        return {
-          object: "block" as const,
-          type: "bulleted_list_item" as const,
-          bulleted_list_item: {
-            rich_text: pageId
-              ? linkedRichText(label, notionPageUrl(pageId))
-              : richText(label).rich_text,
-          },
-        };
-      }),
+      ...(mode === "audio"
+        ? audioSegmentBlocks(segments)
+        : materialSegmentBlocks(segments)),
     ],
   });
 }
@@ -1038,135 +1112,41 @@ export async function getScriptApprovalFromNotion(pageId: string): Promise<
   }
 }
 
-export async function publishAudioSegmentsToNotion({
-  task,
-  sourceStep,
-  targetStep,
+export async function publishScriptSegmentsToNotion({
+  audioStep,
+  materialStep,
   segments,
 }: {
-  task: Task;
-  sourceStep: Task["steps"][number];
-  targetStep: Task["steps"][number];
+  audioStep?: Task["steps"][number];
+  materialStep?: Task["steps"][number];
   segments: AudioSegment[];
-}): Promise<AudioSegmentPublishResult> {
+}): Promise<SegmentWorkflowPublishResult> {
   const notion = getNotionClient();
-  const databaseId = process.env.NOTION_DATABASE_ID;
 
-  if (!notion || !databaseId || !targetStep.notion?.pageId) {
+  if (!notion || (!audioStep?.notion?.pageId && !materialStep?.notion?.pageId)) {
     return { state: "not_configured" };
   }
 
   try {
-    const [schema, assignees] = await Promise.all([
-      getDataSourceSchema(notion, databaseId),
-      getAvailableAssignees(),
-    ]);
-
-    if (!schema) {
-      return {
-        state: "failed",
-        error: "No data source found for the configured Notion database.",
-      };
+    if (audioStep?.notion?.pageId) {
+      await replaceStepWithSegmentWorkflow({
+        notion,
+        pageId: audioStep.notion.pageId,
+        segments,
+        mode: "audio",
+      });
     }
 
-    const assignee =
-      assignees.find((item) => item.id === targetStep.assigneeId) ??
-      assignees.find((item) => item.notionUserId === targetStep.assigneeId) ??
-      getFallbackAssignee(targetStep.assigneeId ?? task.assigneeId);
-    const segmentPageIds: Record<string, string> = {};
-
-    for (const segment of segments) {
-      const segmentProperties = buildPageProperties({
-        schema,
-        title: `音频 ${String(segment.index).padStart(2, "0")}｜${task.title}`,
-        status: "draft",
-        assignee,
-        dueDate: targetStep.dueDate || task.dueDate || task.targetPublishDate,
-        taskType: "subtask",
+    if (materialStep?.notion?.pageId) {
+      await replaceStepWithSegmentWorkflow({
+        notion,
+        pageId: materialStep.notion.pageId,
+        segments,
+        mode: "material",
       });
-
-      if (!segmentProperties) {
-        throw new Error("No title property found for audio segment creation.");
-      }
-
-      const page = await notion.pages.create({
-        parent: {
-          data_source_id: schema.dataSourceId,
-        },
-        properties: segmentProperties,
-        children: [
-          {
-            object: "block",
-            type: "heading_2",
-            heading_2: {
-              rich_text: richText(`Segment ${String(segment.index).padStart(2, "0")}`).rich_text,
-            },
-          },
-          {
-            object: "block",
-            type: "paragraph",
-            paragraph: {
-              rich_text: richText(segment.text).rich_text,
-            },
-          },
-          {
-            object: "block",
-            type: "heading_3",
-            heading_3: {
-              rich_text: richText("上传区").rich_text,
-            },
-          },
-          {
-            object: "block",
-            type: "callout",
-            callout: {
-              rich_text: richText("在这里输入 /upload，或直接拖入本段音频文件。").rich_text,
-              color: "gray_background",
-            },
-          },
-          {
-            object: "block",
-            type: "to_do",
-            to_do: {
-              checked: false,
-              rich_text: richText("音频已上传").rich_text,
-            },
-          },
-          {
-            object: "block",
-            type: "paragraph",
-            paragraph: {
-              rich_text: richText(`来源步骤：${sourceStep.title}`).rich_text,
-            },
-          },
-          {
-            object: "block",
-            type: "paragraph",
-            paragraph: {
-              rich_text: richText(`归属大任务：${task.title}`).rich_text,
-            },
-          },
-          {
-            object: "block",
-            type: "paragraph",
-            paragraph: {
-              rich_text: richText(`父任务 Notion page id：${task.notion.pageId ?? ""}`).rich_text,
-            },
-          },
-        ],
-      });
-
-      segmentPageIds[segment.id] = page.id;
     }
 
-    await appendAudioSegmentIndex({
-      notion,
-      pageId: targetStep.notion.pageId,
-      segments,
-      segmentPageIds,
-    });
-
-    return { state: "published", segmentPageIds };
+    return { state: "published" };
   } catch (error) {
     return {
       state: "failed",

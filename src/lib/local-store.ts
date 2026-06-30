@@ -6,7 +6,7 @@ import {
   deleteTaskFromNotion,
   getAvailableAssignees,
   getScriptApprovalFromNotion,
-  publishAudioSegmentsToNotion,
+  publishScriptSegmentsToNotion,
   publishTaskStepsToNotion,
   publishTaskToNotion,
   syncParentTaskIndexToNotion,
@@ -33,6 +33,7 @@ const tasksCollectionName = "tasks";
 const webhookEventsCollectionName = "notion_webhook_events";
 
 const audioStepTitle = "按照文案分段进行音频录制/AI语音生成";
+const materialStepTitle = "按照文案分段进行素材收集";
 
 const seedTasks: Task[] = [
   {
@@ -306,9 +307,6 @@ export async function deleteTask(taskId: string) {
   const remotePageIds = [
     task.notion.pageId,
     ...task.steps.map((step) => step.notion?.pageId),
-    ...task.steps.flatMap((step) =>
-      step.audioSegments?.map((segment) => segment.notion?.pageId) ?? [],
-    ),
   ].filter((pageId): pageId is string => Boolean(pageId));
   let remoteDeleteFailed = false;
 
@@ -480,14 +478,15 @@ export async function generateAudioSegmentsFromScriptStep({
   const collection = await getTasksCollection();
   const task = await findTaskById(collection, taskId);
   const sourceStep = task?.steps.find((step) => step.id === scriptStepId);
-  const targetStep = task?.steps.find((step) => step.title === audioStepTitle);
+  const audioStep = task?.steps.find((step) => step.title === audioStepTitle);
+  const materialStep = task?.steps.find((step) => step.title === materialStepTitle);
 
   if (!task || !sourceStep) {
     return { state: "not_found" as const };
   }
 
-  if (!targetStep) {
-    return { state: "missing_audio_step" as const };
+  if (!audioStep && !materialStep) {
+    return { state: "missing_segment_steps" as const };
   }
 
   const normalizedScript = normalizeScript(scriptText || sourceStep.scriptText || "");
@@ -497,12 +496,12 @@ export async function generateAudioSegmentsFromScriptStep({
   }
 
   const sourceScriptHash = hashScript(normalizedScript);
-  const existingSegments = targetStep.audioSegments ?? [];
+  const existingSegments = audioStep?.audioSegments ?? materialStep?.audioSegments ?? [];
+  const isAudioCurrent = !audioStep || audioStep.sourceScriptHash === sourceScriptHash;
+  const isMaterialCurrent =
+    !materialStep || materialStep.sourceScriptHash === sourceScriptHash;
 
-  if (
-    targetStep.sourceScriptHash === sourceScriptHash &&
-    existingSegments.length > 0
-  ) {
+  if (isAudioCurrent && isMaterialCurrent && existingSegments.length > 0) {
     return { state: "already_current" as const, segments: existingSegments };
   }
 
@@ -512,24 +511,18 @@ export async function generateAudioSegmentsFromScriptStep({
     return { state: "empty_script" as const };
   }
 
-  const publishResult = await publishAudioSegmentsToNotion({
-    task,
-    sourceStep,
-    targetStep,
+  const publishResult = await publishScriptSegmentsToNotion({
+    audioStep,
+    materialStep,
     segments,
   });
 
   const segmentsWithNotion: AudioSegment[] = segments.map((segment) => {
-    const pageId =
-      publishResult.state === "published"
-        ? publishResult.segmentPageIds[segment.id]
-        : undefined;
-
     return {
       ...segment,
       notion:
-        publishResult.state === "published" && pageId
-          ? { state: "published", pageId }
+        publishResult.state === "published"
+          ? { state: "published" }
           : publishResult.state === "failed"
             ? { state: "failed", error: publishResult.error }
             : { state: "not_configured" },
@@ -552,10 +545,22 @@ export async function generateAudioSegmentsFromScriptStep({
         };
       }
 
-      if (step.id === targetStep.id) {
+      if (audioStep && step.id === audioStep.id) {
         return {
           ...step,
-          description: `已根据文案生成 ${segmentsWithNotion.length} 个音频分段；音频请在 Notion 对应分段页面的上传区处理。`,
+          description: `已根据文案生成 ${segmentsWithNotion.length} 个音频分段；音频请在本 Notion 页面内按段落上传。`,
+          generatedFromStepId: sourceStep.id,
+          sourceScriptHash,
+          audioSegments: segmentsWithNotion,
+          completed: false,
+          status: "in_progress",
+        };
+      }
+
+      if (materialStep && step.id === materialStep.id) {
+        return {
+          ...step,
+          description: `已根据文案生成 ${segmentsWithNotion.length} 个素材分段；素材请在本 Notion 页面内按段落收集。`,
           generatedFromStepId: sourceStep.id,
           sourceScriptHash,
           audioSegments: segmentsWithNotion,

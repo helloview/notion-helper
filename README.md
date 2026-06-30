@@ -35,7 +35,7 @@
 - 在 Notion 的“文案生成”子任务上把 `Status` 改成 `Done`。
 - Notion webhook 请求 `POST /api/notion/webhook`。
 - App 读取该 Notion 页面正文里 `>>> 文案开始` 和 `>>> 文案结束` 之间的文案。
-- App 自动拆分文案，并在 Notion 里生成多个 `音频 01｜...` 子任务。
+- App 自动拆分文案，并更新已有的“音频录制/AI语音生成”和“素材收集”两个子任务页面。
 - 团队成员进入每个音频 Segment 子任务，在页面上传区输入 `/upload` 或直接拖入音频文件。
 - MongoDB 只保存任务、分段、Notion page id、幂等 hash，不保存音频文件。
 

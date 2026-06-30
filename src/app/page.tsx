@@ -634,7 +634,7 @@ function AudioSegmentPanel({
         <div>
           <div className="text-sm font-semibold text-zinc-950">Notion 音频分段</div>
           <div className="mt-1 text-xs text-zinc-500">
-            每个 Segment 都是独立 Notion 子任务，音频在对应页面上传区处理。
+            分段会写入现有 Notion 音频/素材页面，不再创建额外子任务。
           </div>
         </div>
         <Badge className="border-[#b6ff4a] bg-[#eaffc8] text-[#1c3b00]">
@@ -643,27 +643,19 @@ function AudioSegmentPanel({
       </div>
       <div className="grid gap-2 md:grid-cols-2">
         {segments.map((segment) => {
-          const url = notionPageUrl(segment.notion?.pageId);
-
           return (
-            <a
+            <div
               key={segment.id}
-              href={url || undefined}
-              target={url ? "_blank" : undefined}
-              rel={url ? "noreferrer" : undefined}
-              className="group rounded-md border border-zinc-200 bg-zinc-50 p-3 text-sm transition hover:border-zinc-950 hover:bg-white"
+              className="rounded-md border border-zinc-200 bg-zinc-50 p-3 text-sm"
             >
               <div className="mb-2 flex items-center justify-between gap-2">
                 <span className="font-mono text-xs font-semibold text-zinc-500">
                   SEG {String(segment.index).padStart(2, "0")}
                 </span>
-                <span className="inline-flex items-center gap-1 text-xs text-zinc-500 group-hover:text-zinc-950">
-                  Notion 上传
-                  <ArrowUpRight className="size-3.5" aria-hidden />
-                </span>
+                <span className="text-xs text-zinc-500">页面内分段</span>
               </div>
               <p className="line-clamp-3 leading-6 text-zinc-700">{segment.text}</p>
-            </a>
+            </div>
           );
         })}
       </div>
