@@ -10,7 +10,12 @@ export type NotionPublishState =
 
 export type TaskKind = "general" | "video";
 
-export type StepStatus = "todo" | "in_progress" | "blocked" | "done";
+export type StepStatus =
+  | "todo"
+  | "processing"
+  | "in_progress"
+  | "blocked"
+  | "done";
 
 export type AudioSegmentStatus = "pending" | "uploaded" | "needs_revision";
 
@@ -64,6 +69,8 @@ export type TaskStep = {
 export type Task = {
   id: string;
   kind?: TaskKind;
+  projectCode?: string;
+  notionNamingVersion?: number;
   title: string;
   summary: string;
   status: TaskStatus;

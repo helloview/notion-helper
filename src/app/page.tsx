@@ -52,6 +52,7 @@ const priorityLabels: Record<Priority, string> = {
 
 const stepStatusLabels: Record<StepStatus, string> = {
   todo: "待开始",
+  processing: "处理中",
   in_progress: "进行中",
   blocked: "阻塞",
   done: "完成",
@@ -70,6 +71,7 @@ function completion(task: Task) {
 
 function badgeClass(status: TaskStatus | StepStatus) {
   if (status === "done") return "border-[#b6ff4a] bg-[#eaffc8] text-[#1c3b00]";
+  if (status === "processing") return "border-cyan-200 bg-cyan-50 text-cyan-700";
   if (status === "blocked") return "border-red-200 bg-red-50 text-red-700";
   if (status === "draft" || status === "todo") return "border-zinc-200 bg-zinc-100 text-zinc-600";
   return "border-zinc-900 bg-zinc-950 text-white";
@@ -372,6 +374,11 @@ function TaskCard({
       <div className="grid gap-5 border-b border-zinc-200 p-4 sm:p-5 xl:grid-cols-[minmax(0,1fr)_310px]">
         <div className="min-w-0">
           <div className="mb-3 flex flex-wrap items-center gap-2">
+            {task.projectCode ? (
+              <Badge className="border-zinc-950 bg-zinc-950 text-white">
+                [{task.projectCode}]
+              </Badge>
+            ) : null}
             <Badge className={badgeClass(task.status)}>{statusLabels[task.status]}</Badge>
             <Badge className={priorityClass(task.priority)}>
               <Flag className="size-3" aria-hidden />
@@ -589,6 +596,7 @@ function StepRow({
         <Field label="状态">
           <select name="status" defaultValue={status} className={inputClass}>
             <option value="todo">待开始</option>
+            <option value="processing">处理中</option>
             <option value="in_progress">进行中</option>
             <option value="blocked">阻塞</option>
             <option value="done">完成</option>

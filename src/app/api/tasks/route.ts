@@ -20,6 +20,7 @@ const taskKinds = new Set<TaskKind>(["general", "video"]);
 const statuses = new Set<TaskStatus>(["draft", "active", "blocked", "done"]);
 const stepStatuses = new Set<StepStatus>([
   "todo",
+  "processing",
   "in_progress",
   "blocked",
   "done",

@@ -19,6 +19,7 @@ const priorities = new Set<Priority>(["low", "medium", "high"]);
 const statuses = new Set<TaskStatus>(["draft", "active", "blocked", "done"]);
 const stepStatuses = new Set<StepStatus>([
   "todo",
+  "processing",
   "in_progress",
   "blocked",
   "done",

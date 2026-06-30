@@ -189,12 +189,23 @@ function notionPageUrl(pageId: string) {
   return `https://www.notion.so/${pageId.replaceAll("-", "")}`;
 }
 
-function stepDisplayTitle(step: Task["steps"][number]) {
-  return `${step.phase ? `${step.phase} - ` : ""}${step.title}`;
+function projectCodePrefix(projectCode?: string) {
+  return projectCode ? `[${projectCode}] ` : "";
 }
 
-function stepInputDisplayTitle(step: UpdateStepInput) {
-  return `${step.phase ? `${step.phase} - ` : ""}${step.title}`;
+function taskDisplayTitle(task: Pick<Task, "projectCode" | "title">) {
+  return `${projectCodePrefix(task.projectCode)}${task.title}`;
+}
+
+function stepDisplayTitle(
+  step: Pick<Task["steps"][number], "title">,
+  task?: Pick<Task, "projectCode">,
+) {
+  return `${projectCodePrefix(task?.projectCode)}${step.title}`;
+}
+
+function stepInputDisplayTitle(step: UpdateStepInput, projectCode?: string) {
+  return `${projectCodePrefix(projectCode)}${step.title}`;
 }
 
 function toAssignee(
@@ -272,12 +283,15 @@ function findProperty(
   )?.[0];
 }
 
+type NotionStatusInput = Task["status"] | "processing";
+
 function mapStatusForNotion(
-  localStatus: Task["status"],
+  localStatus: NotionStatusInput,
   statusOptions: string[] = [],
 ) {
-  const preferred: Record<Task["status"], string[]> = {
+  const preferred: Record<NotionStatusInput, string[]> = {
     draft: ["Not started", "Todo", "Backlog", "草稿"],
+    processing: ["Processing", "处理中", "In progress", "Doing", "进行中"],
     active: ["In progress", "Doing", "进行中"],
     blocked: ["Blocked", "In progress", "阻塞"],
     done: ["Done", "Complete", "完成"],
@@ -309,6 +323,7 @@ function mapTaskTypeForNotion(
 function taskStatusFromStepStatus(status: NonNullable<Task["steps"][number]["status"]>) {
   if (status === "done") return "done";
   if (status === "blocked") return "blocked";
+  if (status === "processing") return "processing";
   if (status === "in_progress") return "active";
   return "draft";
 }
@@ -323,7 +338,7 @@ function buildPageProperties({
 }: {
   schema: DataSourceSchema;
   title: string;
-  status: Task["status"];
+  status: NotionStatusInput;
   assignee?: Assignee;
   dueDate?: string;
   taskType?: NotionTaskType;
@@ -442,7 +457,7 @@ async function createStepPagesForTask({
     const stepStatus = step.status ?? (step.completed ? "done" : "todo");
     const stepProperties = buildPageProperties({
       schema,
-      title: stepDisplayTitle(step),
+      title: stepDisplayTitle(step, task),
       status: taskStatusFromStepStatus(stepStatus),
       assignee: stepAssignee,
       dueDate: step.dueDate || notionDueDate,
@@ -491,7 +506,7 @@ async function createStepPagesForTask({
           object: "block",
           type: "paragraph",
           paragraph: {
-            rich_text: richText(`归属大任务：${task.title}`).rich_text,
+            rich_text: richText(`归属大任务：${taskDisplayTitle(task)}`).rich_text,
           },
         },
         {
@@ -670,6 +685,42 @@ async function archiveManagedSegmentWorkflowBlocks(notion: Client, pageId: strin
   } while (startCursor);
 }
 
+function isSegmentWorkflowText(text: string) {
+  return (
+    text === "文案分段工作区" ||
+    text === "音频分段任务" ||
+    text === "素材分段任务" ||
+    text.startsWith("已根据文案自动拆分") ||
+    text.startsWith("[段落") ||
+    text.startsWith("上传或嵌入本段音频") ||
+    text.startsWith("为本段收集")
+  );
+}
+
+async function pageHasSegmentWorkflow(notion: Client, pageId: string) {
+  let startCursor: string | undefined;
+
+  do {
+    const response = await notion.blocks.children.list({
+      block_id: pageId,
+      start_cursor: startCursor,
+      page_size: 100,
+    });
+
+    for (const block of response.results) {
+      if (!("type" in block)) continue;
+
+      if (isSegmentWorkflowText(blockText(block))) {
+        return true;
+      }
+    }
+
+    startCursor = response.next_cursor ?? undefined;
+  } while (startCursor);
+
+  return false;
+}
+
 async function archiveBootstrapStepBlocks(notion: Client, pageId: string) {
   let startCursor: string | undefined;
 
@@ -695,6 +746,39 @@ async function archiveBootstrapStepBlocks(notion: Client, pageId: string) {
 
     startCursor = response.next_cursor ?? undefined;
   } while (startCursor);
+}
+
+export async function detectExistingSegmentWorkflow({
+  audioStep,
+  materialStep,
+}: {
+  audioStep?: Task["steps"][number];
+  materialStep?: Task["steps"][number];
+}) {
+  const notion = getNotionClient();
+
+  if (!notion) {
+    return { state: "not_configured" as const };
+  }
+
+  try {
+    const targets = [audioStep, materialStep].filter(
+      (step): step is NonNullable<typeof step> => Boolean(step?.notion?.pageId),
+    );
+
+    for (const step of targets) {
+      if (step.notion?.pageId && (await pageHasSegmentWorkflow(notion, step.notion.pageId))) {
+        return { state: "exists" as const };
+      }
+    }
+
+    return { state: "empty" as const };
+  } catch (error) {
+    return {
+      state: "failed" as const,
+      error: error instanceof Error ? error.message : "Unknown Notion error",
+    };
+  }
 }
 
 export async function cleanupSegmentStepBootstrapContent({
@@ -852,7 +936,7 @@ async function archiveManagedParentTaskBlocks(
 ) {
   let startCursor: string | undefined;
   const generatedStepTitles = new Set(
-    task?.steps.map((step) => stepDisplayTitle(step)) ?? [],
+    task?.steps.map((step) => stepDisplayTitle(step, task)) ?? [],
   );
 
   do {
@@ -917,7 +1001,7 @@ async function appendParentTaskIndex({
       if (!pageId) return null;
 
       const status = step.status ?? (step.completed ? "done" : "todo");
-      const title = stepDisplayTitle(step);
+      const title = stepDisplayTitle(step, task);
 
       return {
         object: "block" as const,
@@ -1246,7 +1330,7 @@ export async function publishTaskToNotion(task: Task): Promise<PublishResult> {
   const notionDueDate = task.dueDate || task.targetPublishDate;
   const parentProperties = buildPageProperties({
     schema,
-    title: task.title,
+    title: taskDisplayTitle(task),
     status: task.status,
     assignee,
     dueDate: notionDueDate,
@@ -1261,6 +1345,7 @@ export async function publishTaskToNotion(task: Task): Promise<PublishResult> {
   }
 
   const metadataLines = [
+    task.projectCode ? `项目编号：[${task.projectCode}]` : "",
     task.kind === "video" ? "类型：视频项目" : "类型：普通任务",
     task.contentSeries ? `系列：${task.contentSeries}` : "",
     task.weekLabel ? `周期：${task.weekLabel}` : "",
@@ -1478,11 +1563,71 @@ export async function updateTaskStatusInNotion(
   }
 }
 
+export async function updateStepStatusInNotion(
+  pageId: string | undefined,
+  status: NonNullable<Task["steps"][number]["status"]>,
+): Promise<UpdateResult> {
+  if (!pageId) {
+    return { state: "not_configured" };
+  }
+
+  const notion = getNotionClient();
+  const databaseId = process.env.NOTION_DATABASE_ID;
+
+  if (!notion || !databaseId) {
+    return { state: "not_configured" };
+  }
+
+  try {
+    const schema = await getDataSourceSchema(notion, databaseId);
+
+    if (!schema) {
+      return {
+        state: "failed",
+        error: "No data source found for the configured Notion database.",
+      };
+    }
+
+    const statusProperty = findProperty(
+      schema,
+      process.env.NOTION_STATUS_PROPERTY ?? "Status",
+      "status",
+    );
+
+    if (!statusProperty) {
+      return { state: "not_configured" };
+    }
+
+    await notion.pages.update({
+      page_id: pageId,
+      properties: {
+        [statusProperty]: {
+          status: {
+            name: mapStatusForNotion(
+              taskStatusFromStepStatus(status),
+              schema.properties[statusProperty]?.options,
+            ),
+          },
+        },
+      },
+    });
+
+    return { state: "updated" };
+  } catch (error) {
+    return {
+      state: "failed",
+      error: error instanceof Error ? error.message : "Unknown Notion error",
+    };
+  }
+}
+
 export async function updateTaskInNotion({
   pageId,
+  projectCode,
   task,
 }: {
   pageId?: string;
+  projectCode?: string;
   task: UpdateTaskInput;
 }): Promise<UpdateResult> {
   if (!pageId) {
@@ -1515,7 +1660,7 @@ export async function updateTaskInNotion({
       getFallbackAssignee(task.assigneeId);
     const properties = buildPageProperties({
       schema,
-      title: task.title,
+      title: `${projectCodePrefix(projectCode)}${task.title}`,
       status: task.status,
       assignee,
       dueDate: task.dueDate || task.targetPublishDate,
@@ -1543,13 +1688,91 @@ export async function updateTaskInNotion({
   }
 }
 
+export async function renameTaskPagesInNotion(task: Task): Promise<UpdateResult> {
+  const notion = getNotionClient();
+  const databaseId = process.env.NOTION_DATABASE_ID;
+
+  if (!notion || !databaseId) {
+    return { state: "not_configured" };
+  }
+
+  try {
+    const schema = await getDataSourceSchema(notion, databaseId);
+
+    if (!schema) {
+      return {
+        state: "failed",
+        error: "No data source found for the configured Notion database.",
+      };
+    }
+
+    const titleProperty = findProperty(
+      schema,
+      process.env.NOTION_TITLE_PROPERTY ?? "Tasks",
+      "title",
+    );
+
+    if (!titleProperty) {
+      return {
+        state: "failed",
+        error: "No title property found in the configured Notion database.",
+      };
+    }
+
+    const updates = [
+      task.notion.pageId
+        ? {
+            pageId: task.notion.pageId,
+            title: taskDisplayTitle(task),
+          }
+        : null,
+      ...task.steps.map((step) =>
+        step.notion?.pageId
+          ? {
+              pageId: step.notion.pageId,
+              title: stepDisplayTitle(step, task),
+            }
+          : null,
+      ),
+    ].filter(
+      (update): update is { pageId: string; title: string } => Boolean(update),
+    );
+
+    for (const update of updates) {
+      await notion.pages.update({
+        page_id: update.pageId,
+        properties: {
+          [titleProperty]: {
+            title: [
+              {
+                text: {
+                  content: update.title,
+                },
+              },
+            ],
+          },
+        },
+      });
+    }
+
+    return { state: "updated" };
+  } catch (error) {
+    return {
+      state: "failed",
+      error: error instanceof Error ? error.message : "Unknown Notion error",
+    };
+  }
+}
+
 export async function updateStepInNotion({
   pageId,
   parentTitle,
+  projectCode,
   step,
 }: {
   pageId?: string;
   parentTitle: string;
+  projectCode?: string;
   step: UpdateStepInput;
 }): Promise<UpdateResult> {
   if (!pageId) {
@@ -1626,7 +1849,7 @@ export async function updateStepInNotion({
           title: [
             {
               text: {
-                content: stepInputDisplayTitle(step),
+                content: stepInputDisplayTitle(step, projectCode),
               },
             },
           ],

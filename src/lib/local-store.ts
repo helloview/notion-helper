@@ -5,13 +5,16 @@ import { getMongoDb } from "./mongodb";
 import {
   cleanupSegmentStepBootstrapContent,
   deleteTaskFromNotion,
+  detectExistingSegmentWorkflow,
   getAvailableAssignees,
   getScriptApprovalFromNotion,
   publishScriptSegmentsToNotion,
   publishTaskStepsToNotion,
   publishTaskToNotion,
+  renameTaskPagesInNotion,
   syncParentTaskIndexToNotion,
   updateStepInNotion,
+  updateStepStatusInNotion,
   updateTaskInNotion,
   updateTaskStatusInNotion,
 } from "./notion";
@@ -32,14 +35,22 @@ type TaskDocument = Task & { _id?: unknown };
 
 const tasksCollectionName = "tasks";
 const webhookEventsCollectionName = "notion_webhook_events";
+const projectCountersCollectionName = "project_counters";
+const projectCodeCounterId = "task_project_code";
+const taskNamingVersion = 1;
 
 const audioStepTitle = "按照文案分段进行音频录制/AI语音生成";
 const materialStepTitle = "按照文案分段进行素材收集";
+const canonicalAudioStepTitle = "音频";
+const canonicalMaterialStepTitle = "素材";
+const canonicalScriptStepTitle = "脚本";
 
 const seedTasks: Task[] = [
   {
     id: "task-local-demo",
     kind: "video",
+    projectCode: "N10",
+    notionNamingVersion: taskNamingVersion,
     title: "每周塔罗牌新手挑战题视频",
     summary: "本周视频任务，从文案到发布追踪完整推进。",
     status: "active",
@@ -76,6 +87,13 @@ async function getTasksCollection(): Promise<Collection<TaskDocument>> {
   if (!indexesReady) {
     await Promise.all([
       collection.createIndex({ id: 1 }, { unique: true }),
+      collection.createIndex(
+        { projectCode: 1 },
+        {
+          unique: true,
+          partialFilterExpression: { projectCode: { $type: "string" } },
+        },
+      ),
       collection.createIndex({ updatedAt: -1 }),
       collection.createIndex({ "steps.notion.pageId": 1 }),
       db.collection(webhookEventsCollectionName).createIndex(
@@ -110,9 +128,110 @@ async function ensureSeedTask(collection: Collection<TaskDocument>) {
   }
 }
 
+function projectCodeStart() {
+  const configured = Number(process.env.PROJECT_CODE_START ?? "10");
+  return Number.isFinite(configured) && configured > 0 ? Math.floor(configured) : 10;
+}
+
+async function nextProjectCode() {
+  const db = await getMongoDb();
+  const counters = db.collection<{ _id: string; seq: number }>(
+    projectCountersCollectionName,
+  );
+  const start = projectCodeStart();
+
+  await counters.updateOne(
+    { _id: projectCodeCounterId },
+    { $setOnInsert: { seq: start - 1 } },
+    { upsert: true },
+  );
+
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const counter = await counters.findOneAndUpdate(
+      { _id: projectCodeCounterId },
+      { $inc: { seq: 1 } },
+      { returnDocument: "after" },
+    );
+    const code = `N${counter?.seq ?? start + attempt}`;
+    const existing = await db.collection<TaskDocument>(tasksCollectionName).findOne({
+      projectCode: code,
+    });
+
+    if (!existing) return code;
+  }
+
+  return `N${Date.now()}`;
+}
+
+function canonicalVideoStepTitle(step: Task["steps"][number]) {
+  if (step.phase === "脚本" || step.title === "文案生成") return canonicalScriptStepTitle;
+  if (step.phase === "音频" || step.title === audioStepTitle) return canonicalAudioStepTitle;
+  if (step.phase === "素材" || step.title === materialStepTitle) {
+    return canonicalMaterialStepTitle;
+  }
+  if (step.phase === "剪辑" || step.title === "视频剪辑") return "剪辑";
+  if (step.phase === "发布" || step.title === "平台发布 + 追踪") return "发布";
+  return step.title;
+}
+
+function normalizeVideoStepNaming(step: Task["steps"][number]) {
+  if (!step.phase) return step;
+
+  return {
+    ...step,
+    title: canonicalVideoStepTitle(step),
+  };
+}
+
+function isScriptStep(step: Task["steps"][number]) {
+  return step.phase === "脚本" || step.title === canonicalScriptStepTitle || step.title === "文案生成";
+}
+
+function isAudioSegmentStep(step: Task["steps"][number]) {
+  return step.phase === "音频" || step.title === canonicalAudioStepTitle || step.title === audioStepTitle;
+}
+
+function isMaterialSegmentStep(step: Task["steps"][number]) {
+  return (
+    step.phase === "素材" ||
+    step.title === canonicalMaterialStepTitle ||
+    step.title === materialStepTitle
+  );
+}
+
+async function ensureTaskNaming(collection: Collection<TaskDocument>) {
+  const candidates = await collection
+    .find({
+      $or: [
+        { projectCode: { $exists: false } },
+        { notionNamingVersion: { $ne: taskNamingVersion } },
+      ],
+    })
+    .toArray();
+
+  for (const candidate of candidates) {
+    const task = stripMongoId(candidate);
+    const projectCode = task.projectCode ?? (await nextProjectCode());
+    const updatedTask: Task = {
+      ...task,
+      projectCode,
+      notionNamingVersion: taskNamingVersion,
+      steps:
+        task.kind === "video"
+          ? task.steps.map((step) => normalizeVideoStepNaming(step))
+          : task.steps,
+      updatedAt: new Date().toISOString(),
+    };
+
+    await renameTaskPagesInNotion(updatedTask);
+    await collection.replaceOne({ id: task.id }, updatedTask);
+  }
+}
+
 export async function getTasks() {
   const collection = await getTasksCollection();
   await ensureSeedTask(collection);
+  await ensureTaskNaming(collection);
   const tasks = await collection.find({}).sort({ updatedAt: -1 }).toArray();
   return tasks.map(stripMongoId);
 }
@@ -169,6 +288,8 @@ export async function createTask(input: CreateTaskInput) {
   const task: Task = {
     id: randomUUID(),
     kind: input.kind ?? "general",
+    projectCode: await nextProjectCode(),
+    notionNamingVersion: taskNamingVersion,
     title: input.title.trim(),
     summary: input.summary.trim(),
     status: "active",
@@ -273,6 +394,7 @@ export async function updateTaskDetails(taskId: string, input: UpdateTaskInput) 
 
   const remoteUpdateResult = await updateTaskInNotion({
     pageId: task.notion.pageId,
+    projectCode: task.projectCode,
     task: normalizedTask,
   });
 
@@ -405,7 +527,8 @@ export async function updateStep(
 
   const remoteUpdateResult = await updateStepInNotion({
     pageId: step.notion?.pageId,
-    parentTitle: task.title,
+    parentTitle: `${task.projectCode ? `[${task.projectCode}] ` : ""}${task.title}`,
+    projectCode: task.projectCode,
     step: normalizedStep,
   });
 
@@ -479,8 +602,8 @@ export async function generateAudioSegmentsFromScriptStep({
   const collection = await getTasksCollection();
   const task = await findTaskById(collection, taskId);
   const sourceStep = task?.steps.find((step) => step.id === scriptStepId);
-  const audioStep = task?.steps.find((step) => step.title === audioStepTitle);
-  const materialStep = task?.steps.find((step) => step.title === materialStepTitle);
+  const audioStep = task?.steps.find((step) => isAudioSegmentStep(step));
+  const materialStep = task?.steps.find((step) => isMaterialSegmentStep(step));
 
   if (!task || !sourceStep) {
     return { state: "not_found" as const };
@@ -507,26 +630,76 @@ export async function generateAudioSegmentsFromScriptStep({
   const isAudioCurrent = !audioStep || audioStep.sourceScriptHash === sourceScriptHash;
   const isMaterialCurrent =
     !materialStep || materialStep.sourceScriptHash === sourceScriptHash;
-  const existingSegmentsPublished = existingSegments.every(
-    (segment) => segment.notion?.state === "published",
-  );
   const existingSegmentsMatch = existingSegments.length === segments.length &&
     existingSegments.every((segment, index) => segment.text === segments[index]?.text);
-
-  await cleanupSegmentStepBootstrapContent({
-    audioStep,
-    materialStep,
-  });
 
   if (
     isAudioCurrent &&
     isMaterialCurrent &&
     existingSegments.length > 0 &&
-    existingSegmentsPublished &&
     existingSegmentsMatch
   ) {
+    const now = new Date().toISOString();
+    const updatedTask: Task = {
+      ...task,
+      steps: task.steps.map((step) => {
+        if (step.id === sourceStep.id) {
+          return {
+            ...step,
+            scriptText: normalizedScript,
+            scriptApprovedAt: step.scriptApprovedAt ?? now,
+            scriptApprovedBy: step.scriptApprovedBy ?? approvedBy,
+            sourceScriptHash,
+            completed: true,
+            status: "done",
+          };
+        }
+
+        if ((audioStep && step.id === audioStep.id) || (materialStep && step.id === materialStep.id)) {
+          return {
+            ...step,
+            sourceScriptHash,
+            completed: false,
+            status: "processing",
+          };
+        }
+
+        return step;
+      }),
+      updatedAt: now,
+    };
+
+    await Promise.all(
+      [audioStep, materialStep]
+        .filter((step): step is NonNullable<typeof step> => Boolean(step))
+        .map((step) => updateStepStatusInNotion(step.notion?.pageId, "processing")),
+    );
+    await syncParentTaskIndexToNotion(updatedTask);
+    await collection.replaceOne({ id: taskId }, updatedTask);
+
     return { state: "already_current" as const, segments: existingSegments };
   }
+
+  const existingWorkflow = await detectExistingSegmentWorkflow({
+    audioStep,
+    materialStep,
+  });
+
+  if (existingWorkflow.state === "exists" || existingWorkflow.state === "failed") {
+    return {
+      state: "skipped_existing_workflow" as const,
+      segments: existingSegments,
+      error:
+        existingWorkflow.state === "failed"
+          ? existingWorkflow.error
+          : "Audio or material page already contains a generated segment workflow.",
+    };
+  }
+
+  await cleanupSegmentStepBootstrapContent({
+    audioStep,
+    materialStep,
+  });
 
   const publishResult = await publishScriptSegmentsToNotion({
     audioStep,
@@ -570,7 +743,7 @@ export async function generateAudioSegmentsFromScriptStep({
           sourceScriptHash,
           audioSegments: segmentsWithNotion,
           completed: false,
-          status: "in_progress",
+          status: "processing",
         };
       }
 
@@ -582,7 +755,7 @@ export async function generateAudioSegmentsFromScriptStep({
           sourceScriptHash,
           audioSegments: segmentsWithNotion,
           completed: false,
-          status: "in_progress",
+          status: "processing",
         };
       }
 
@@ -591,12 +764,22 @@ export async function generateAudioSegmentsFromScriptStep({
     updatedAt: now,
   };
 
+  const segmentStepStatusUpdates = await Promise.all(
+    [audioStep, materialStep]
+      .filter((step): step is NonNullable<typeof step> => Boolean(step))
+      .map((step) => updateStepStatusInNotion(step.notion?.pageId, "processing")),
+  );
+
   await syncParentTaskIndexToNotion(updatedTask);
   await collection.replaceOne({ id: taskId }, updatedTask);
 
+  const statusUpdateFailed = segmentStepStatusUpdates.some(
+    (result) => result.state === "failed",
+  );
+
   return {
     state:
-      publishResult.state === "published"
+      publishResult.state === "published" && !statusUpdateFailed
         ? ("generated_remote_and_local" as const)
         : ("generated_local" as const),
     segments: segmentsWithNotion,
@@ -634,7 +817,7 @@ export async function processNotionConfirmedScriptPage(
   const task = stripMongoId(taskDocument);
   const sourceStep = task.steps.find((step) => step.notion?.pageId === pageId);
 
-  if (!sourceStep || sourceStep.title !== "文案生成") {
+  if (!sourceStep || !isScriptStep(sourceStep)) {
     await markWebhookEvent(eventId, "ignored");
     return { state: "not_script_step" as const };
   }
@@ -662,7 +845,8 @@ export async function processNotionConfirmedScriptPage(
     eventId,
     result.state === "generated_local" ||
       result.state === "generated_remote_and_local" ||
-      result.state === "already_current"
+      result.state === "already_current" ||
+      result.state === "skipped_existing_workflow"
       ? "processed"
       : "failed",
     "error" in result ? String(result.error) : undefined,
