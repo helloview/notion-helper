@@ -158,6 +158,9 @@ function blockText(block: unknown) {
 function isManagedStepText(text: string) {
   return (
     text === "子任务说明" ||
+    text.startsWith("按脚本段落产出可剪辑音频") ||
+    text.startsWith("为每个脚本段落收集画面") ||
+    text.startsWith("生成完整视频脚本") ||
     text.startsWith("阶段：") ||
     text.startsWith("状态：") ||
     text.startsWith("负责人：") ||
@@ -645,6 +648,7 @@ async function archiveManagedSegmentWorkflowBlocks(notion: Client, pageId: strin
       isInsideManagedWorkflow = isInsideManagedWorkflow || startsManagedWorkflow;
       const shouldArchive =
         isInsideManagedWorkflow ||
+        isManagedStepText(text) ||
         text === "文案分段工作区" ||
         text === "音频分段任务" ||
         text === "素材分段任务" ||
@@ -664,6 +668,64 @@ async function archiveManagedSegmentWorkflowBlocks(notion: Client, pageId: strin
 
     startCursor = response.next_cursor ?? undefined;
   } while (startCursor);
+}
+
+async function archiveBootstrapStepBlocks(notion: Client, pageId: string) {
+  let startCursor: string | undefined;
+
+  do {
+    const response = await notion.blocks.children.list({
+      block_id: pageId,
+      start_cursor: startCursor,
+      page_size: 100,
+    });
+
+    for (const block of response.results) {
+      if (!("type" in block)) continue;
+
+      const text = blockText(block);
+
+      if (isManagedStepText(text)) {
+        await notion.blocks.update({
+          block_id: block.id,
+          in_trash: true,
+        });
+      }
+    }
+
+    startCursor = response.next_cursor ?? undefined;
+  } while (startCursor);
+}
+
+export async function cleanupSegmentStepBootstrapContent({
+  audioStep,
+  materialStep,
+}: {
+  audioStep?: Task["steps"][number];
+  materialStep?: Task["steps"][number];
+}) {
+  const notion = getNotionClient();
+
+  if (!notion) {
+    return { state: "not_configured" as const };
+  }
+
+  try {
+    if (audioStep?.notion?.pageId) {
+      await archiveBootstrapStepBlocks(notion, audioStep.notion.pageId);
+    }
+
+    if (materialStep?.notion?.pageId) {
+      await archiveBootstrapStepBlocks(notion, materialStep.notion.pageId);
+    }
+
+    return { state: "updated" as const };
+  } catch (error) {
+    return {
+      state: "failed" as const,
+      error: error instanceof Error ? error.message : "Unknown Notion error",
+    };
+  }
 }
 
 function audioSegmentBlocks(segments: AudioSegment[]) {

@@ -3,6 +3,7 @@ import type { Collection, WithId } from "mongodb";
 import { defaultAssigneeId } from "./assignees";
 import { getMongoDb } from "./mongodb";
 import {
+  cleanupSegmentStepBootstrapContent,
   deleteTaskFromNotion,
   getAvailableAssignees,
   getScriptApprovalFromNotion,
@@ -511,6 +512,11 @@ export async function generateAudioSegmentsFromScriptStep({
   );
   const existingSegmentsMatch = existingSegments.length === segments.length &&
     existingSegments.every((segment, index) => segment.text === segments[index]?.text);
+
+  await cleanupSegmentStepBootstrapContent({
+    audioStep,
+    materialStep,
+  });
 
   if (
     isAudioCurrent &&
