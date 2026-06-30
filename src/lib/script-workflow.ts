@@ -1,9 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { AudioSegment } from "./types";
 
-const maxSegmentLength = 140;
-const minSegmentLength = 36;
-
 export function hashScript(script: string) {
   return createHash("sha256").update(normalizeScript(script)).digest("hex");
 }
@@ -19,46 +16,50 @@ export function normalizeScript(script: string) {
     .trim();
 }
 
-function splitLongParagraph(paragraph: string) {
-  const sentences = paragraph
-    .split(/(?<=[。！？!?；;])\s*/)
-    .map((sentence) => sentence.trim())
-    .filter(Boolean);
-
-  if (sentences.length <= 1) return [paragraph];
-
-  const chunks: string[] = [];
-  let current = "";
-
-  for (const sentence of sentences) {
-    const next = current ? `${current}${sentence}` : sentence;
-
-    if (next.length > maxSegmentLength && current.length >= minSegmentLength) {
-      chunks.push(current);
-      current = sentence;
-    } else {
-      current = next;
-    }
-  }
-
-  if (current) chunks.push(current);
-  return chunks;
+function isSectionHeading(paragraph: string) {
+  return /^【[\s\S]+】$/.test(paragraph.trim());
 }
 
 export function splitScriptIntoSegments(script: string) {
   const normalized = normalizeScript(script);
   if (!normalized) return [];
 
-  return normalized
+  const paragraphs = normalized
     .split(/\n\s*\n/)
-    .flatMap((paragraph) => {
-      const cleanParagraph = paragraph.replace(/\n+/g, " ").trim();
-      return cleanParagraph.length > maxSegmentLength
-        ? splitLongParagraph(cleanParagraph)
-        : [cleanParagraph];
-    })
+    .map((paragraph) => paragraph.replace(/\n+/g, " ").trim())
     .map((segment) => segment.trim())
     .filter(Boolean);
+
+  if (!paragraphs.some(isSectionHeading)) {
+    return paragraphs;
+  }
+
+  const sections: string[] = [];
+  let currentSection = "";
+
+  for (const paragraph of paragraphs) {
+    if (isSectionHeading(paragraph)) {
+      if (currentSection) {
+        sections.push(currentSection);
+      }
+
+      currentSection = paragraph;
+      continue;
+    }
+
+    if (!currentSection) {
+      currentSection = paragraph;
+      continue;
+    }
+
+    currentSection = `${currentSection}\n\n${paragraph}`;
+  }
+
+  if (currentSection) {
+    sections.push(currentSection);
+  }
+
+  return sections;
 }
 
 export function buildAudioSegments(script: string): AudioSegment[] {

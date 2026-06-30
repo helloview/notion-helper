@@ -753,30 +753,34 @@ async function replaceStepWithSegmentWorkflow({
 }) {
   await archiveManagedSegmentWorkflowBlocks(notion, pageId);
 
-  await notion.blocks.children.append({
-    block_id: pageId,
-    children: [
-      {
-        object: "block",
-        type: "heading_2",
-        heading_2: {
-          rich_text: richText("文案分段工作区").rich_text,
-        },
+  const children = [
+    {
+      object: "block" as const,
+      type: "heading_2" as const,
+      heading_2: {
+        rich_text: richText("文案分段工作区").rich_text,
       },
-      {
-        object: "block",
-        type: "paragraph",
-        paragraph: {
-          rich_text: richText(
-            `已根据文案自动拆分为 ${segments.length} 个段落。${mode === "audio" ? "每段下方处理对应音频。" : "每段下方收集对应素材。"}`,
-          ).rich_text,
-        },
+    },
+    {
+      object: "block" as const,
+      type: "paragraph" as const,
+      paragraph: {
+        rich_text: richText(
+          `已根据文案自动拆分为 ${segments.length} 个段落。${mode === "audio" ? "每段下方处理对应音频。" : "每段下方收集对应素材。"}`,
+        ).rich_text,
       },
-      ...(mode === "audio"
-        ? audioSegmentBlocks(segments)
-        : materialSegmentBlocks(segments)),
-    ],
-  });
+    },
+    ...(mode === "audio"
+      ? audioSegmentBlocks(segments)
+      : materialSegmentBlocks(segments)),
+  ];
+
+  for (let index = 0; index < children.length; index += 100) {
+    await notion.blocks.children.append({
+      block_id: pageId,
+      children: children.slice(index, index + 100),
+    });
+  }
 }
 
 async function archiveManagedParentTaskBlocks(

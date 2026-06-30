@@ -497,18 +497,29 @@ export async function generateAudioSegmentsFromScriptStep({
 
   const sourceScriptHash = hashScript(normalizedScript);
   const existingSegments = audioStep?.audioSegments ?? materialStep?.audioSegments ?? [];
-  const isAudioCurrent = !audioStep || audioStep.sourceScriptHash === sourceScriptHash;
-  const isMaterialCurrent =
-    !materialStep || materialStep.sourceScriptHash === sourceScriptHash;
-
-  if (isAudioCurrent && isMaterialCurrent && existingSegments.length > 0) {
-    return { state: "already_current" as const, segments: existingSegments };
-  }
-
   const segments = buildAudioSegments(normalizedScript);
 
   if (segments.length === 0) {
     return { state: "empty_script" as const };
+  }
+
+  const isAudioCurrent = !audioStep || audioStep.sourceScriptHash === sourceScriptHash;
+  const isMaterialCurrent =
+    !materialStep || materialStep.sourceScriptHash === sourceScriptHash;
+  const existingSegmentsPublished = existingSegments.every(
+    (segment) => segment.notion?.state === "published",
+  );
+  const existingSegmentsMatch = existingSegments.length === segments.length &&
+    existingSegments.every((segment, index) => segment.text === segments[index]?.text);
+
+  if (
+    isAudioCurrent &&
+    isMaterialCurrent &&
+    existingSegments.length > 0 &&
+    existingSegmentsPublished &&
+    existingSegmentsMatch
+  ) {
+    return { state: "already_current" as const, segments: existingSegments };
   }
 
   const publishResult = await publishScriptSegmentsToNotion({
