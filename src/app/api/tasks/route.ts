@@ -53,7 +53,13 @@ export async function POST(request: Request) {
     summary,
     priority: priorities.has(priority as Priority) ? (priority as Priority) : "medium",
     assigneeId: String(body.assigneeId ?? defaultAssigneeId),
+    assigneeIds: Array.isArray(body.assigneeIds)
+      ? body.assigneeIds.map(String)
+      : undefined,
     stepAssigneeId: body.stepAssigneeId ? String(body.stepAssigneeId) : undefined,
+    stepAssigneeIds: Array.isArray(body.stepAssigneeIds)
+      ? body.stepAssigneeIds.map(String)
+      : undefined,
     dueDate: body.dueDate ? String(body.dueDate) : "",
     contentSeries: body.contentSeries ? String(body.contentSeries) : "",
     weekLabel: body.weekLabel ? String(body.weekLabel) : "",
@@ -89,6 +95,9 @@ export async function PATCH(request: Request) {
   const action = body.action ? String(body.action) : "";
   const stepId = body.stepId ? String(body.stepId) : "";
   const assigneeId = body.assigneeId ? String(body.assigneeId) : "";
+  const assigneeIds = Array.isArray(body.assigneeIds)
+    ? body.assigneeIds.map(String)
+    : undefined;
 
   if (action === "publishSteps") {
     if (!taskId) {
@@ -101,20 +110,13 @@ export async function PATCH(request: Request) {
       return NextResponse.json({ error: "task not found" }, { status: 404 });
     }
 
-    if (result.state === "failed") {
-      return NextResponse.json(
-        { error: result.error, state: result.state },
-        { status: 502 },
-      );
-    }
-
     return NextResponse.json(result);
   }
 
   if (stepId) {
-    if (!taskId || !assigneeId || !stepStatuses.has(status as StepStatus)) {
+    if (!taskId || !stepStatuses.has(status as StepStatus)) {
       return NextResponse.json(
-        { error: "id, stepId, assigneeId, and a valid step status are required" },
+        { error: "id, stepId, and a valid step status are required" },
         { status: 400 },
       );
     }
@@ -128,19 +130,13 @@ export async function PATCH(request: Request) {
         description: body.description ? String(body.description) : "",
         status: status as StepStatus,
         assigneeId,
+        assigneeIds,
         dueDate: body.dueDate ? String(body.dueDate) : "",
       },
     );
 
     if (result.state === "not_found") {
       return NextResponse.json({ error: "task or step not found" }, { status: 404 });
-    }
-
-    if (result.state === "failed") {
-      return NextResponse.json(
-        { error: result.error, state: result.state },
-        { status: 502 },
-      );
     }
 
     return NextResponse.json(result);
@@ -165,6 +161,9 @@ export async function PATCH(request: Request) {
       status: statuses.has(status as TaskStatus) ? (status as TaskStatus) : "active",
       priority: priorities.has(priority as Priority) ? (priority as Priority) : "medium",
       assigneeId: String(body.assigneeId ?? defaultAssigneeId),
+      assigneeIds: Array.isArray(body.assigneeIds)
+        ? body.assigneeIds.map(String)
+        : undefined,
       dueDate: body.dueDate ? String(body.dueDate) : "",
       contentSeries: body.contentSeries ? String(body.contentSeries) : "",
       weekLabel: body.weekLabel ? String(body.weekLabel) : "",
@@ -174,13 +173,6 @@ export async function PATCH(request: Request) {
 
     if (result.state === "not_found") {
       return NextResponse.json({ error: "task not found" }, { status: 404 });
-    }
-
-    if (result.state === "failed") {
-      return NextResponse.json(
-        { error: result.error, state: result.state },
-        { status: 502 },
-      );
     }
 
     return NextResponse.json(result);

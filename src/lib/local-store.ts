@@ -237,8 +237,13 @@ export async function getTasks() {
 }
 
 function normalizeTask(task: Task): Task {
+  const taskAssigneeIds = normalizeAssigneeIds(task.assigneeIds, task.assigneeId);
+  const taskAssigneeId = taskAssigneeIds[0];
+
   return {
     ...task,
+    assigneeIds: taskAssigneeIds,
+    assigneeId: taskAssigneeId,
     kind: task.kind ?? "general",
     platforms: task.platforms ?? [],
     steps: task.steps.map((step) => ({
@@ -248,15 +253,31 @@ function normalizeTask(task: Task): Task {
         status: segment.status ?? "pending",
       })),
       status: step.status ?? (step.completed ? "done" : "todo"),
-      assigneeId: step.assigneeId ?? task.assigneeId,
+      assigneeIds: normalizeAssigneeIds(
+        step.assigneeIds,
+        step.assigneeId ?? taskAssigneeId,
+      ),
+      assigneeId: normalizeAssigneeIds(
+        step.assigneeIds,
+        step.assigneeId ?? taskAssigneeId,
+      )[0],
     })),
   };
+}
+
+function normalizeAssigneeIds(ids?: string[], fallbackId?: string) {
+  return [...new Set([...(ids ?? []), fallbackId].filter(Boolean) as string[])];
+}
+
+function resolveAssigneeIds(assignees: Awaited<ReturnType<typeof getAvailableAssignees>>, ids?: string[]) {
+  const validIds = new Set(assignees.map((assignee) => assignee.id));
+  return [...new Set((ids ?? []).filter((id) => validIds.has(id)))];
 }
 
 function buildSteps(
   kind: TaskKind,
   rawSteps: string[],
-  assigneeId: string,
+  assigneeIds: string[],
 ) {
   const fallbackTemplate =
     kind === "video"
@@ -272,7 +293,8 @@ function buildSteps(
       title,
       phase: template?.phase ?? "执行",
       description: template?.description ?? "",
-      assigneeId,
+      assigneeId: assigneeIds[0],
+      assigneeIds,
       completed: false,
       status: "todo" as StepStatus,
     };
@@ -282,9 +304,15 @@ function buildSteps(
 export async function createTask(input: CreateTaskInput) {
   const now = new Date().toISOString();
   const assignees = await getAvailableAssignees();
-  const assigneeId = assignees.some((assignee) => assignee.id === input.assigneeId)
-    ? input.assigneeId
-    : assignees[0]?.id ?? defaultAssigneeId;
+  const assigneeIds = resolveAssigneeIds(
+    assignees,
+    normalizeAssigneeIds(input.assigneeIds, input.assigneeId),
+  );
+  const stepAssigneeIds = resolveAssigneeIds(
+    assignees,
+    normalizeAssigneeIds(input.stepAssigneeIds, input.stepAssigneeId),
+  );
+  const primaryAssigneeId = assigneeIds[0];
   const task: Task = {
     id: randomUUID(),
     kind: input.kind ?? "general",
@@ -294,7 +322,8 @@ export async function createTask(input: CreateTaskInput) {
     summary: input.summary.trim(),
     status: "active",
     priority: input.priority,
-    assigneeId,
+    assigneeId: primaryAssigneeId,
+    assigneeIds,
     dueDate: input.dueDate,
     contentSeries: input.contentSeries?.trim(),
     weekLabel: input.weekLabel?.trim(),
@@ -303,7 +332,7 @@ export async function createTask(input: CreateTaskInput) {
     steps: buildSteps(
       input.kind ?? "general",
       input.steps.map((step) => step.trim()).filter(Boolean),
-      input.stepAssigneeId ?? assigneeId,
+      stepAssigneeIds,
     ),
     notion: {
       state: "pending",
@@ -386,20 +415,12 @@ export async function updateTaskDetails(taskId: string, input: UpdateTaskInput) 
     contentSeries: input.contentSeries?.trim(),
     weekLabel: input.weekLabel?.trim(),
     platforms: input.platforms?.filter(Boolean),
+    assigneeIds: normalizeAssigneeIds(input.assigneeIds, input.assigneeId),
+    assigneeId: normalizeAssigneeIds(input.assigneeIds, input.assigneeId)[0],
   };
 
   if (!normalizedTask.title || !normalizedTask.summary) {
     return { state: "invalid" as const };
-  }
-
-  const remoteUpdateResult = await updateTaskInNotion({
-    pageId: task.notion.pageId,
-    projectCode: task.projectCode,
-    task: normalizedTask,
-  });
-
-  if (remoteUpdateResult.state === "failed") {
-    return remoteUpdateResult;
   }
 
   const updatedTask: Task = {
@@ -408,13 +429,24 @@ export async function updateTaskDetails(taskId: string, input: UpdateTaskInput) 
     updatedAt: new Date().toISOString(),
   };
 
-  await syncParentTaskIndexToNotion(updatedTask);
   await collection.replaceOne({ id: taskId }, updatedTask);
+
+  const remoteUpdateResult = await updateTaskInNotion({
+    pageId: task.notion.pageId,
+    projectCode: task.projectCode,
+    task: normalizedTask,
+  });
+
+  if (remoteUpdateResult.state !== "failed") {
+    await syncParentTaskIndexToNotion(updatedTask);
+  }
 
   return {
     state:
       remoteUpdateResult.state === "updated"
         ? ("updated_remote_and_local" as const)
+        : remoteUpdateResult.state === "failed"
+          ? ("updated_local_remote_failed" as const)
         : ("updated_local" as const),
   };
 }
@@ -519,21 +551,12 @@ export async function updateStep(
     title: input.title.trim(),
     phase: input.phase?.trim(),
     description: input.description?.trim(),
+    assigneeIds: normalizeAssigneeIds(input.assigneeIds, input.assigneeId),
+    assigneeId: normalizeAssigneeIds(input.assigneeIds, input.assigneeId)[0],
   };
 
   if (!normalizedStep.title) {
     return { state: "invalid" as const };
-  }
-
-  const remoteUpdateResult = await updateStepInNotion({
-    pageId: step.notion?.pageId,
-    parentTitle: `${task.projectCode ? `[${task.projectCode}] ` : ""}${task.title}`,
-    projectCode: task.projectCode,
-    step: normalizedStep,
-  });
-
-  if (remoteUpdateResult.state === "failed") {
-    return remoteUpdateResult;
   }
 
   const updatedTask: Task = {
@@ -550,13 +573,25 @@ export async function updateStep(
     updatedAt: new Date().toISOString(),
   };
 
-  await syncParentTaskIndexToNotion(updatedTask);
   await collection.replaceOne({ id: taskId }, updatedTask);
+
+  const remoteUpdateResult = await updateStepInNotion({
+    pageId: step.notion?.pageId,
+    parentTitle: `${task.projectCode ? `[${task.projectCode}] ` : ""}${task.title}`,
+    projectCode: task.projectCode,
+    step: normalizedStep,
+  });
+
+  if (remoteUpdateResult.state !== "failed") {
+    await syncParentTaskIndexToNotion(updatedTask);
+  }
 
   return {
     state:
       remoteUpdateResult.state === "updated"
         ? ("updated_remote_and_local" as const)
+        : remoteUpdateResult.state === "failed"
+          ? ("updated_local_remote_failed" as const)
         : ("updated_local" as const),
   };
 }

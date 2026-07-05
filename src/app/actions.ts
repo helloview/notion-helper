@@ -35,7 +35,12 @@ export async function publishTaskAction(formData: FormData) {
   const summary = String(formData.get("summary") ?? "").trim();
   const priorityValue = String(formData.get("priority") ?? "medium");
   const assigneeId = String(formData.get("assigneeId") ?? defaultAssigneeId);
+  const assigneeIds = formData.getAll("assigneeIds").map(String).filter(Boolean);
   const stepAssigneeId = String(formData.get("stepAssigneeId") ?? assigneeId);
+  const stepAssigneeIds = formData
+    .getAll("stepAssigneeIds")
+    .map(String)
+    .filter(Boolean);
   const dueDate = String(formData.get("dueDate") ?? "").trim();
   const contentSeries = String(formData.get("contentSeries") ?? "").trim();
   const weekLabel = String(formData.get("weekLabel") ?? "").trim();
@@ -51,14 +56,19 @@ export async function publishTaskAction(formData: FormData) {
   }
 
   const assignees = await getAvailableAssignees();
-  const resolvedAssigneeId = assignees.some((assignee) => assignee.id === assigneeId)
+  const knownAssigneeIds = new Set(assignees.map((assignee) => assignee.id));
+  const resolvedAssigneeIds = assigneeIds.filter((id) =>
+    knownAssigneeIds.has(id),
+  );
+  const resolvedStepAssigneeIds = stepAssigneeIds.filter((id) =>
+    knownAssigneeIds.has(id),
+  );
+  const resolvedAssigneeId = knownAssigneeIds.has(assigneeId)
     ? assigneeId
-    : assignees[0]?.id ?? defaultAssigneeId;
-  const resolvedStepAssigneeId = assignees.some(
-    (assignee) => assignee.id === stepAssigneeId,
-  )
+    : resolvedAssigneeIds[0];
+  const resolvedStepAssigneeId = knownAssigneeIds.has(stepAssigneeId)
     ? stepAssigneeId
-    : resolvedAssigneeId;
+    : resolvedStepAssigneeIds[0] ?? resolvedAssigneeId;
 
   const task = await createTask({
     kind,
@@ -68,12 +78,14 @@ export async function publishTaskAction(formData: FormData) {
       ? (priorityValue as Priority)
       : "medium",
     assigneeId: resolvedAssigneeId,
+    assigneeIds: resolvedAssigneeIds,
     dueDate,
     contentSeries,
     weekLabel,
     platforms,
     targetPublishDate,
     stepAssigneeId: resolvedStepAssigneeId,
+    stepAssigneeIds: resolvedStepAssigneeIds,
     steps: steps.length > 0 ? steps : defaultStepsForKind(kind),
   });
 
@@ -115,6 +127,7 @@ export async function updateTaskDetailsAction(formData: FormData) {
   const statusValue = String(formData.get("status") ?? "active");
   const priorityValue = String(formData.get("priority") ?? "medium");
   const assigneeId = String(formData.get("assigneeId") ?? defaultAssigneeId);
+  const assigneeIds = formData.getAll("assigneeIds").map(String).filter(Boolean);
   const dueDate = String(formData.get("dueDate") ?? "").trim();
   const contentSeries = String(formData.get("contentSeries") ?? "").trim();
   const weekLabel = String(formData.get("weekLabel") ?? "").trim();
@@ -135,6 +148,7 @@ export async function updateTaskDetailsAction(formData: FormData) {
       ? (priorityValue as Priority)
       : "medium",
     assigneeId,
+    assigneeIds,
     dueDate,
     contentSeries,
     weekLabel,
@@ -154,13 +168,13 @@ export async function updateStepAction(formData: FormData) {
   const description = String(formData.get("description") ?? "").trim();
   const statusValue = String(formData.get("status") ?? "todo");
   const assigneeId = String(formData.get("assigneeId") ?? "");
+  const assigneeIds = formData.getAll("assigneeIds").map(String).filter(Boolean);
   const dueDate = String(formData.get("dueDate") ?? "").trim();
 
   if (
     taskId &&
     stepId &&
     title &&
-    assigneeId &&
     stepStatuses.has(statusValue as StepStatus)
   ) {
     const result = await updateStep(
@@ -172,6 +186,7 @@ export async function updateStepAction(formData: FormData) {
         description,
         status: statusValue as StepStatus,
         assigneeId,
+        assigneeIds,
         dueDate,
       },
     );

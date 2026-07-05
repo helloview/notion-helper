@@ -57,6 +57,7 @@ export type TaskStep = {
   generatedFromStepId?: string;
   audioSegments?: AudioSegment[];
   assigneeId?: string;
+  assigneeIds?: string[];
   dueDate?: string;
   status?: StepStatus;
   notion?: {
@@ -75,7 +76,8 @@ export type Task = {
   summary: string;
   status: TaskStatus;
   priority: Priority;
-  assigneeId: string;
+  assigneeId?: string;
+  assigneeIds?: string[];
   dueDate?: string;
   contentSeries?: string;
   weekLabel?: string;
@@ -96,13 +98,15 @@ export type CreateTaskInput = {
   title: string;
   summary: string;
   priority: Priority;
-  assigneeId: string;
+  assigneeId?: string;
+  assigneeIds?: string[];
   dueDate?: string;
   contentSeries?: string;
   weekLabel?: string;
   platforms?: string[];
   targetPublishDate?: string;
   stepAssigneeId?: string;
+  stepAssigneeIds?: string[];
   steps: string[];
 };
 
@@ -111,7 +115,8 @@ export type UpdateTaskInput = {
   summary: string;
   status: TaskStatus;
   priority: Priority;
-  assigneeId: string;
+  assigneeId?: string;
+  assigneeIds?: string[];
   dueDate?: string;
   contentSeries?: string;
   weekLabel?: string;
@@ -124,6 +129,7 @@ export type UpdateStepInput = {
   phase?: string;
   description?: string;
   status: StepStatus;
-  assigneeId: string;
+  assigneeId?: string;
+  assigneeIds?: string[];
   dueDate?: string;
 };

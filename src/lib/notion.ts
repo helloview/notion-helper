@@ -332,14 +332,14 @@ function buildPageProperties({
   schema,
   title,
   status,
-  assignee,
+  assignees,
   dueDate,
   taskType,
 }: {
   schema: DataSourceSchema;
   title: string;
   status: NotionStatusInput;
-  assignee?: Assignee;
+  assignees?: Assignee[];
   dueDate?: string;
   taskType?: NotionTaskType;
 }) {
@@ -401,23 +401,20 @@ function buildPageProperties({
           },
         }
       : {}),
-    ...(assignee?.notionUserId && assigneeProperty
+    ...(assigneeProperty
       ? {
           [assigneeProperty]: {
-            people: [
-              {
-                id: assignee.notionUserId,
-              },
-            ],
+            people: (assignees ?? [])
+              .map((assignee) => assignee.notionUserId)
+              .filter((id): id is string => Boolean(id))
+              .map((id) => ({ id })),
           },
         }
       : {}),
-    ...(dueDate && dueDateProperty
+    ...(dueDateProperty
       ? {
           [dueDateProperty]: {
-            date: {
-              start: dueDate,
-            },
+            date: dueDate ? { start: dueDate } : null,
           },
         }
       : {}),
@@ -450,16 +447,17 @@ async function createStepPagesForTask({
   const stepPageIds: Record<string, string> = {};
 
   for (const step of task.steps) {
-    const stepAssignee =
-      assignees.find((item) => item.id === step.assigneeId) ??
-      assignees.find((item) => item.notionUserId === step.assigneeId) ??
-      getFallbackAssignee(step.assigneeId ?? task.assigneeId);
+    const stepAssignees = resolveNotionAssignees(
+      assignees,
+      step.assigneeIds,
+      step.assigneeId ?? task.assigneeId,
+    );
     const stepStatus = step.status ?? (step.completed ? "done" : "todo");
     const stepProperties = buildPageProperties({
       schema,
       title: stepDisplayTitle(step, task),
       status: taskStatusFromStepStatus(stepStatus),
-      assignee: stepAssignee,
+      assignees: stepAssignees,
       dueDate: step.dueDate || notionDueDate,
       taskType: "subtask",
     });
@@ -1079,6 +1077,27 @@ function mergeAssignees(groups: Assignee[][]) {
   );
 }
 
+function resolveNotionAssignees(
+  assignees: Assignee[],
+  assigneeIds?: string[],
+  fallbackId?: string,
+) {
+  const ids = assigneeIds?.length ? assigneeIds : fallbackId ? [fallbackId] : [];
+  const resolved = ids
+    .map(
+      (id) =>
+        assignees.find((item) => item.id === id) ??
+        assignees.find((item) => item.notionUserId === id),
+    )
+    .filter((assignee): assignee is Assignee => Boolean(assignee));
+
+  return [...new Map(resolved.map((assignee) => [assignee.id, assignee])).values()];
+}
+
+function assigneeListLabel(assignees: Assignee[]) {
+  return assignees.length ? assignees.map((assignee) => assignee.name).join(" / ") : "未分配";
+}
+
 async function listWorkspaceUsers(notion: Client) {
   const users: Assignee[] = [];
   let startCursor: string | undefined;
@@ -1314,10 +1333,11 @@ export async function publishTaskToNotion(task: Task): Promise<PublishResult> {
   }
 
   const assignees = await getAvailableAssignees();
-  const assignee =
-    assignees.find((item) => item.id === task.assigneeId) ??
-    assignees.find((item) => item.notionUserId === task.assigneeId) ??
-    getFallbackAssignee(task.assigneeId);
+  const taskAssignees = resolveNotionAssignees(
+    assignees,
+    task.assigneeIds,
+    task.assigneeId,
+  );
   const schema = await getDataSourceSchema(notion, databaseId);
 
   if (!schema) {
@@ -1332,7 +1352,7 @@ export async function publishTaskToNotion(task: Task): Promise<PublishResult> {
     schema,
     title: taskDisplayTitle(task),
     status: task.status,
-    assignee,
+    assignees: taskAssignees,
     dueDate: notionDueDate,
     taskType: "main",
   });
@@ -1654,15 +1674,16 @@ export async function updateTaskInNotion({
       };
     }
 
-    const assignee =
-      assignees.find((item) => item.id === task.assigneeId) ??
-      assignees.find((item) => item.notionUserId === task.assigneeId) ??
-      getFallbackAssignee(task.assigneeId);
+    const taskAssignees = resolveNotionAssignees(
+      assignees,
+      task.assigneeIds,
+      task.assigneeId,
+    );
     const properties = buildPageProperties({
       schema,
       title: `${projectCodePrefix(projectCode)}${task.title}`,
       status: task.status,
-      assignee,
+      assignees: taskAssignees,
       dueDate: task.dueDate || task.targetPublishDate,
       taskType: "main",
     });
@@ -1830,10 +1851,11 @@ export async function updateStepInNotion({
           schema.properties[taskTypeProperty]?.options,
         )
       : undefined;
-    const assignee =
-      assignees.find((item) => item.id === step.assigneeId) ??
-      assignees.find((item) => item.notionUserId === step.assigneeId) ??
-      getFallbackAssignee(step.assigneeId);
+    const stepAssignees = resolveNotionAssignees(
+      assignees,
+      step.assigneeIds,
+      step.assigneeId,
+    );
 
     if (!titleProperty) {
       return {
@@ -1866,14 +1888,13 @@ export async function updateStepInNotion({
               },
             }
           : {}),
-        ...(assignee.notionUserId && assigneeProperty
+        ...(assigneeProperty
           ? {
               [assigneeProperty]: {
-                people: [
-                  {
-                    id: assignee.notionUserId,
-                  },
-                ],
+                people: stepAssignees
+                  .map((assignee) => assignee.notionUserId)
+                  .filter((id): id is string => Boolean(id))
+                  .map((id) => ({ id })),
               },
             }
           : {}),
@@ -1905,7 +1926,7 @@ export async function updateStepInNotion({
       pageId,
       parentTitle,
       step,
-      assigneeName: assignee.name,
+      assigneeName: assigneeListLabel(stepAssignees),
     });
 
     return { state: "updated" };

@@ -1,31 +1,37 @@
 import {
-  Activity,
-  ArrowUpRight,
+  BarChart3,
   CalendarDays,
   CheckCircle2,
-  Clapperboard,
-  Clock3,
-  ClipboardCheck,
+  ChevronDown,
+  CircleDot,
   ExternalLink,
+  FileText,
   Film,
   Flag,
   Gauge,
+  Home as HomeIcon,
   Layers3,
   ListChecks,
-  MonitorPlay,
   PenLine,
-  Play,
-  RadioTower,
-  Scissors,
-  SlidersHorizontal,
+  RotateCcw,
+  Search,
+  Settings,
+  Sparkles,
+  TrendingUp,
   UserRound,
   type LucideIcon,
 } from "lucide-react";
-import Image from "next/image";
+import Link from "next/link";
 import { defaultAssigneeId, getFallbackAssignee } from "@/lib/assignees";
 import { getTasks } from "@/lib/local-store";
 import { getAvailableAssignees } from "@/lib/notion";
-import type { Assignee, Priority, StepStatus, Task, TaskStatus } from "@/lib/types";
+import type {
+  Assignee,
+  Priority,
+  StepStatus,
+  Task,
+  TaskStatus,
+} from "@/lib/types";
 import { DeleteTaskForm } from "./delete-task-form";
 import {
   deleteTaskAction,
@@ -33,6 +39,10 @@ import {
   updateTaskDetailsAction,
 } from "./actions";
 import { PublishTaskModal } from "./publish-task-modal";
+import {
+  PendingFormStatus,
+  PendingSubmitButton,
+} from "./pending-submit-button";
 import { StatusBanner } from "./status-banner";
 
 export const dynamic = "force-dynamic";
@@ -59,28 +69,24 @@ const stepStatusLabels: Record<StepStatus, string> = {
 };
 
 const platformOptions = ["小红书", "抖音", "B站", "YouTube"];
+const platformDisplayLabels: Record<string, string> = {
+  YouTube: "油管",
+};
+
+const queueStatusFilters = ["all", "active", "blocked", "done", "draft"] as const;
+const queueSortOptions = ["updated", "progress", "priority", "due"] as const;
+
+type QueueStatusFilter = (typeof queueStatusFilters)[number];
+type QueueSort = (typeof queueSortOptions)[number];
 
 function completion(task: Task) {
   if (task.steps.length === 0) return 0;
   return Math.round(
-    (task.steps.filter((step) => step.completed || step.status === "done").length /
+    (task.steps.filter((step) => step.completed || step.status === "done")
+      .length /
       task.steps.length) *
       100,
   );
-}
-
-function badgeClass(status: TaskStatus | StepStatus) {
-  if (status === "done") return "border-[#b6ff4a] bg-[#eaffc8] text-[#1c3b00]";
-  if (status === "processing") return "border-cyan-200 bg-cyan-50 text-cyan-700";
-  if (status === "blocked") return "border-red-200 bg-red-50 text-red-700";
-  if (status === "draft" || status === "todo") return "border-zinc-200 bg-zinc-100 text-zinc-600";
-  return "border-zinc-900 bg-zinc-950 text-white";
-}
-
-function priorityClass(priority: Priority) {
-  if (priority === "high") return "border-[#b6ff4a] bg-[#b6ff4a] text-zinc-950";
-  if (priority === "low") return "border-zinc-200 bg-white text-zinc-600";
-  return "border-zinc-800 bg-zinc-900 text-white";
 }
 
 function notionPageUrl(pageId?: string) {
@@ -92,7 +98,56 @@ function assigneeName(
   assigneeId: string | undefined,
 ) {
   if (!assigneeId) return "未分配";
-  return assigneeById.get(assigneeId)?.name ?? getFallbackAssignee(assigneeId).name;
+  return (
+    assigneeById.get(assigneeId)?.name ?? getFallbackAssignee(assigneeId).name
+  );
+}
+
+function assigneeNames(
+  assigneeById: Map<string, Assignee>,
+  assigneeIds: string[] | undefined,
+  fallbackId?: string,
+) {
+  const ids = assigneeIds?.length ? assigneeIds : fallbackId ? [fallbackId] : [];
+  if (ids.length === 0) return "未分配";
+  return ids.map((id) => assigneeName(assigneeById, id)).join(" / ");
+}
+
+function taskAssigneeIds(task: Task) {
+  return task.assigneeIds?.length
+    ? task.assigneeIds
+    : task.assigneeId
+      ? [task.assigneeId]
+      : [];
+}
+
+function normalizeStatusFilter(value?: string): QueueStatusFilter {
+  return queueStatusFilters.includes(value as QueueStatusFilter)
+    ? (value as QueueStatusFilter)
+    : "all";
+}
+
+function normalizeQueueSort(value?: string): QueueSort {
+  return queueSortOptions.includes(value as QueueSort)
+    ? (value as QueueSort)
+    : "updated";
+}
+
+function priorityWeight(priority: Priority) {
+  return priority === "high" ? 0 : priority === "medium" ? 1 : 2;
+}
+
+function dueTimestamp(task: Task) {
+  const value = task.targetPublishDate || task.dueDate;
+  return value ? Date.parse(value) : Number.POSITIVE_INFINITY;
+}
+
+function displayPlatform(platform: string) {
+  return platformDisplayLabels[platform] ?? platform;
+}
+
+function displayPlatforms(platforms: string[] | undefined) {
+  return platforms?.length ? platforms.map(displayPlatform).join(" / ") : "未选平台";
 }
 
 export default async function Home({
@@ -103,7 +158,12 @@ export default async function Home({
     delete?: string;
     error?: string;
     notion?: string;
+    owner?: string;
+    project?: string;
+    q?: string;
+    sort?: string;
     stepUpdate?: string;
+    status?: string;
     update?: string;
   }>;
 }) {
@@ -123,179 +183,437 @@ export default async function Home({
   const assigneeById = new Map(
     assignees.flatMap((assignee) => [
       [assignee.id, assignee] as const,
-      ...(assignee.notionUserId ? ([[assignee.notionUserId, assignee]] as const) : []),
+      ...(assignee.notionUserId
+        ? ([[assignee.notionUserId, assignee]] as const)
+        : []),
     ]),
   );
   const activeCount = tasks.filter((task) => task.status === "active").length;
-  const blockedCount = tasks.filter((task) => task.status === "blocked").length;
+  const blockedCount = tasks.filter(
+    (task) => task.status === "blocked",
+  ).length;
   const doneCount = tasks.filter((task) => task.status === "done").length;
   const stepCount = tasks.reduce((sum, task) => sum + task.steps.length, 0);
   const averageProgress = tasks.length
-    ? Math.round(tasks.reduce((sum, task) => sum + completion(task), 0) / tasks.length)
+    ? Math.round(
+        tasks.reduce((sum, task) => sum + completion(task), 0) / tasks.length,
+      )
     : 0;
+  const queueQuery = String(params.q ?? "").trim();
+  const normalizedQuery = queueQuery.toLowerCase();
+  const statusFilter = normalizeStatusFilter(params.status);
+  const ownerFilter = String(params.owner ?? "all");
+  const queueSort = normalizeQueueSort(params.sort);
+  const hasActiveQueueFilters =
+    Boolean(queueQuery) ||
+    statusFilter !== "all" ||
+    ownerFilter !== "all" ||
+    queueSort !== "updated";
+  const filteredTasks = tasks
+    .filter((task) => {
+      if (statusFilter !== "all" && task.status !== statusFilter) {
+        return false;
+      }
+
+      const ownerIds = taskAssigneeIds(task);
+      if (ownerFilter === "unassigned" && ownerIds.length > 0) {
+        return false;
+      }
+      if (
+        ownerFilter !== "all" &&
+        ownerFilter !== "unassigned" &&
+        !ownerIds.includes(ownerFilter)
+      ) {
+        return false;
+      }
+
+      if (!normalizedQuery) return true;
+
+      const searchable = [
+        task.projectCode,
+        task.title,
+        task.summary,
+        task.contentSeries,
+        task.weekLabel,
+        displayPlatforms(task.platforms),
+        statusLabels[task.status],
+        priorityLabels[task.priority],
+        assigneeNames(assigneeById, task.assigneeIds, task.assigneeId),
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+
+      return searchable.includes(normalizedQuery);
+    })
+    .sort((a, b) => {
+      if (queueSort === "progress") return completion(a) - completion(b);
+      if (queueSort === "priority") {
+        return priorityWeight(a.priority) - priorityWeight(b.priority);
+      }
+      if (queueSort === "due") return dueTimestamp(a) - dueTimestamp(b);
+      return Date.parse(b.updatedAt) - Date.parse(a.updatedAt);
+    });
+  const selectedTask =
+    filteredTasks.find((task) => task.id === params.project) ??
+    filteredTasks[0];
 
   return (
-    <main className="min-h-screen bg-[#ececea] text-zinc-950">
-      <section className="relative overflow-hidden bg-zinc-950 text-white">
-        <div className="absolute inset-0 opacity-[0.07] [background-image:linear-gradient(#fff_1px,transparent_1px),linear-gradient(90deg,#fff_1px,transparent_1px)] [background-size:52px_52px]" />
-        <div className="absolute left-0 top-28 h-px w-72 -rotate-12 bg-gradient-to-r from-transparent via-fuchsia-400/50 to-transparent" />
-        <div className="absolute right-0 top-44 h-px w-80 rotate-12 bg-gradient-to-r from-transparent via-[#b6ff4a]/60 to-transparent" />
-        <div className="relative mx-auto flex w-full max-w-[1480px] flex-col gap-7 px-4 pb-8 pt-4 sm:px-6 lg:px-8 lg:pb-10">
-          <div className="flex flex-col gap-4 rounded-lg border border-white/10 bg-zinc-950/60 px-4 py-3 backdrop-blur sm:flex-row sm:items-center sm:justify-between">
-            <div className="flex items-center gap-3">
-              <span className="inline-flex size-10 items-center justify-center rounded-md bg-[#b6ff4a] text-zinc-950 shadow-[0_0_32px_rgba(182,255,74,0.35)]">
-                <Clapperboard className="size-5" aria-hidden />
-              </span>
-              <div>
-                <div className="text-sm font-semibold tracking-wide">TaskOps</div>
-                <div className="text-xs text-zinc-400">Creative Production Command</div>
+    <main className="app-canvas min-h-screen text-[#151a18]">
+      <div className="app-dots fixed inset-0 -z-10" />
+      <div className="grid min-h-screen w-full lg:grid-cols-[232px_minmax(0,1fr)]">
+        <aside className="hidden border-r border-[#dddfd2] bg-[#ebeae1]/72 px-4 py-5 backdrop-blur-xl lg:block">
+          <div className="flex items-center gap-3 px-2">
+            <span className="inline-flex size-10 items-center justify-center rounded-2xl bg-[#d6ff2a] text-[#101600] shadow-[0_0_18px_rgba(214,255,42,0.30)]">
+              <Sparkles className="size-5" aria-hidden />
+            </span>
+            <div>
+              <div className="font-[var(--font-display)] text-sm font-bold">
+                内容创作者
               </div>
-            </div>
-            <div className="flex items-center">
-              <PublishTaskModal
-                assignees={assignees}
-                defaultAssigneeId={selectedDefaultAssignee?.id ?? defaultAssigneeId}
-              />
+              <div className="text-xs text-[#747b70]">高级用户</div>
             </div>
           </div>
 
-          <div className="grid gap-8 py-4 lg:grid-cols-[0.86fr_1.14fr] lg:items-center lg:py-10">
-            <div className="animate-rise max-w-3xl">
-              <div className="mb-5 inline-flex h-9 items-center gap-2 rounded-md border border-[#b6ff4a]/40 bg-[#b6ff4a]/10 px-3 text-xs font-semibold uppercase tracking-[0.18em] text-[#d8ff9a]">
-                <MonitorPlay className="size-4" aria-hidden />
-                Creator pipeline
-              </div>
-              <h1 className="max-w-3xl text-5xl font-semibold leading-[0.95] tracking-normal text-white sm:text-6xl lg:text-7xl">
-                让视频创作像产线一样推进
-              </h1>
-              <p className="mt-5 max-w-2xl text-base leading-7 text-zinc-300">
-                选题、脚本、录制、剪辑、发布和复盘集中推进。界面只留下会影响交付的动作和状态。
+          <nav className="mt-8 space-y-1">
+            <NavItem icon={HomeIcon} label="创作看板" />
+            <NavItem icon={ListChecks} label="内容选题" active />
+            <NavItem icon={BarChart3} label="数据分析" />
+            <NavItem icon={Settings} label="账号设置" />
+          </nav>
+
+          <div className="absolute bottom-6 left-6 font-mono text-[11px] text-[#747b70]">
+            v1.2.0
+          </div>
+        </aside>
+
+        <section className="min-w-0 px-4 py-4 sm:px-6 lg:px-8 lg:py-7">
+          <div className="mx-auto max-w-[1680px]">
+          <header className="mb-4 rounded-[1.5rem] border border-white/80 bg-[#fffefa]/88 p-4 shadow-[0_18px_42px_rgba(21,26,24,0.07)] backdrop-blur-xl lg:p-5">
+            <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_560px] xl:items-center">
+            <div className="min-w-0">
+              <p className="font-mono text-xs font-semibold uppercase tracking-[0.05em] text-[#4e6700]">
+                内容生产
               </p>
-              <div className="mt-7 grid max-w-xl grid-cols-2 gap-3 sm:grid-cols-4">
-                <CreativeStat icon={Clapperboard} label="项目" value={tasks.length} />
-                <CreativeStat icon={Scissors} label="步骤" value={stepCount} />
-                <CreativeStat icon={RadioTower} label="发布中" value={activeCount} />
-                <CreativeStat icon={Gauge} label="进度" value={`${averageProgress}%`} />
-              </div>
+              <h1 className="mt-1 font-[var(--font-display)] text-4xl font-bold leading-[1.02] tracking-[-0.02em] text-[#151a18] sm:text-5xl xl:text-6xl">
+                创作控制台
+              </h1>
+              <p className="mt-2 max-w-2xl text-sm leading-6 text-[#3e4942]">
+                管理内容产出与追踪进度，让脚本、音频、素材和发布状态保持同步。
+              </p>
             </div>
 
-            <div className="animate-rise relative min-h-[330px] overflow-hidden rounded-lg border border-white/10 bg-black shadow-2xl shadow-black/40 [animation-delay:120ms] sm:min-h-[430px]">
-              <Image
-                src="/creative-ops-hero.png"
-                alt="视频创作流程视觉图，包含镜头、剪辑时间线、画面卡片和发布面板"
-                fill
-                priority
-                sizes="(min-width: 1024px) 760px, 100vw"
-                className="object-cover"
-              />
-              <div className="absolute inset-0 bg-gradient-to-r from-black/35 via-transparent to-black/10" />
-              <div className="absolute bottom-4 left-4 right-4 rounded-lg border border-white/10 bg-black/60 p-4 backdrop-blur-md sm:left-5 sm:right-auto sm:w-80">
-                <div className="flex items-center justify-between gap-4">
-                  <div>
-                    <p className="text-xs uppercase tracking-[0.22em] text-zinc-400">
-                      Live board
-                    </p>
-                    <p className="mt-1 text-lg font-semibold text-white">
-                      {blockedCount > 0 ? `${blockedCount} 个阻塞待处理` : "流程清爽，无阻塞"}
-                    </p>
-                  </div>
-                  <span className="inline-flex size-11 items-center justify-center rounded-md bg-[#b6ff4a] text-zinc-950">
-                    <Play className="size-5 fill-current" aria-hidden />
-                  </span>
+            <div className="grid gap-3">
+              <div className="hidden grid-cols-4 gap-2 md:grid">
+                <OverviewTile label="总进度" value={`${averageProgress}%`} tone="accent" />
+                <OverviewTile label="项目" value={tasks.length} />
+                <OverviewTile label="进行中" value={activeCount} />
+                <OverviewTile label="阻塞" value={blockedCount} tone={blockedCount > 0 ? "danger" : undefined} />
+              </div>
+              <div className="flex items-center justify-between gap-3">
+                <div className="hidden items-center -space-x-2 sm:flex">
+                  {assignees.slice(0, 3).map((assignee) => (
+                    <span
+                      key={assignee.id}
+                      className="inline-flex size-8 items-center justify-center rounded-full border-2 border-white bg-[#dfded2] text-xs font-bold text-[#4e6700]"
+                      title={assignee.name}
+                    >
+                      {assignee.name.slice(0, 1).toUpperCase()}
+                    </span>
+                  ))}
+                  {assignees.length > 3 ? (
+                    <span className="inline-flex size-8 items-center justify-center rounded-full border-2 border-white bg-[#171d1a] font-mono text-[10px] text-white">
+                      +{assignees.length - 3}
+                    </span>
+                  ) : null}
                 </div>
-                <div className="mt-4">
-                  <div className="mb-2 flex items-center justify-between text-xs text-zinc-400">
-                    <span>完成度</span>
-                    <span className="font-mono text-[#b6ff4a]">{averageProgress}%</span>
-                  </div>
-                  <ProgressBar progress={averageProgress} />
-                </div>
+                <PublishTaskModal
+                  assignees={assignees}
+                  defaultAssigneeId={
+                    selectedDefaultAssignee?.id ?? defaultAssigneeId
+                  }
+                />
               </div>
             </div>
-          </div>
-        </div>
-      </section>
+            </div>
+          </header>
 
-      <div className="mx-auto w-full max-w-[1480px] px-4 py-5 sm:px-6 lg:px-8 lg:py-7">
-        <section className="min-w-0 space-y-5">
+          <section className="mb-4 grid gap-2 sm:hidden">
+            <div className="studio-dark overflow-hidden rounded-2xl p-4 text-white shadow-[0_16px_34px_rgba(21,26,24,0.18)]">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="font-mono text-[10px] font-semibold text-white/45">
+                    生产概况
+                  </div>
+                  <div className="mt-2 flex items-end gap-2">
+                    <span className="font-mono text-5xl font-bold leading-none">
+                      {averageProgress}
+                    </span>
+                    <span className="pb-1 font-mono text-base font-bold text-[#d6ff2a]">
+                      %
+                    </span>
+                  </div>
+                </div>
+                <span className="inline-flex size-11 items-center justify-center rounded-2xl bg-[#d6ff2a] text-[#101600] shadow-[0_0_18px_rgba(214,255,42,0.34)]">
+                  <TrendingUp className="size-5" aria-hidden />
+                </span>
+              </div>
+              <div className="mt-3 h-2 overflow-hidden rounded-full bg-white/12">
+                <div
+                  className="h-full rounded-full bg-[#d6ff2a] shadow-[0_0_14px_rgba(214,255,42,0.48)] transition-[width] duration-700"
+                  style={{ width: `${averageProgress}%` }}
+                />
+              </div>
+              <p className="mt-3 text-xs leading-5 text-white/55">
+                {activeCount} 个项目推进中，
+                {blockedCount > 0 ? `${blockedCount} 个阻塞。` : "暂无阻塞。"}
+              </p>
+            </div>
+            <div className="grid grid-cols-3 gap-2">
+              <MobileMetric label="项目" value={tasks.length} />
+              <MobileMetric label="步骤" value={stepCount} />
+              <MobileMetric label="进行中" value={activeCount} />
+              <MobileMetric label="阻塞" value={blockedCount} />
+              <MobileMetric label="完成" value={doneCount} tone="accent" />
+              <MobileMetric label="总进度" value={`${averageProgress}%`} />
+            </div>
+          </section>
+
           <StatusMessages params={params} />
 
-          <div className="animate-rise flex flex-col gap-4 rounded-lg border border-zinc-200 bg-white p-4 shadow-sm lg:flex-row lg:items-center lg:justify-between">
-            <div>
-              <div className="flex items-center gap-2 text-sm font-semibold text-zinc-950">
-                <SlidersHorizontal className="size-4 text-zinc-500" aria-hidden />
-                生产队列
+          <section className="rounded-[1.5rem] border border-white/80 bg-[#fffefa]/86 p-3 shadow-[0_18px_42px_rgba(21,26,24,0.07)] backdrop-blur-xl">
+            <form
+              action="/"
+              className="mb-2 grid gap-1.5 rounded-xl border border-[#dddfd2] bg-[#ebeae1] p-1.5 shadow-[inset_2px_2px_7px_rgba(26,28,31,0.04),inset_-2px_-2px_7px_rgba(255,255,255,0.75)] lg:grid-cols-[auto_minmax(220px,1fr)_132px_160px_140px_auto_auto_auto] lg:items-center"
+            >
+              <div className="hidden h-9 items-center gap-2 whitespace-nowrap px-2 font-[var(--font-display)] text-sm font-bold text-[#151a18] lg:flex">
+                <ListChecks className="size-4 text-[#4e6700]" aria-hidden />
+                项目队列
               </div>
-              <p className="mt-1 text-sm text-zinc-500">
-                展开项目即可编辑主任务和子任务；移动端保持纵向操作，不再横向滚动。
-              </p>
-            </div>
-            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-              <QueuePill icon={Layers3} label="主任务" value={tasks.length} />
-              <QueuePill icon={ClipboardCheck} label="子任务" value={stepCount} />
-              <QueuePill icon={Activity} label="进行中" value={activeCount} />
-              <QueuePill icon={Flag} label="完成" value={doneCount} />
-            </div>
-          </div>
 
-          {tasks.length === 0 ? (
-            <EmptyState />
-          ) : (
-            <div className="space-y-4">
-              {tasks.map((task, index) => (
-                <TaskCard
-                  key={task.id}
-                  task={task}
-                  assignees={assignees}
-                  assigneeById={assigneeById}
-                  index={index}
+              <label className="relative block">
+                <span className="sr-only">搜索项目</span>
+                <Search
+                  className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[#747b70]"
+                  aria-hidden
                 />
-              ))}
-            </div>
-          )}
+                <input
+                  name="q"
+                  defaultValue={queueQuery}
+                  placeholder="搜索编号、标题、系列、平台..."
+                  className="h-9 w-full rounded-lg border border-[#c8ccbf] bg-white pl-9 pr-3 text-sm text-[#151a18] outline-none transition placeholder:text-[#87907f] focus:border-[#4e6700] focus:ring-2 focus:ring-[#d6ff2a]/40"
+                />
+              </label>
+
+              <details className="group/filter lg:contents">
+                <summary className="flex h-9 cursor-pointer list-none items-center justify-between rounded-lg border border-[#c8ccbf] bg-white px-3 text-sm font-bold text-[#3e4942] lg:hidden">
+                  <span className="flex items-center gap-2">
+                    <Search className="size-4 text-[#4e6700]" aria-hidden />
+                    筛选条件
+                  </span>
+                  <ChevronDown className="size-4 transition group-open/filter:rotate-180" />
+                </summary>
+                <div className="mt-1 grid gap-1.5 lg:contents">
+                  <label className="block">
+                <span className="sr-only">状态</span>
+                <select
+                  name="status"
+                  defaultValue={statusFilter}
+                  className="h-9 w-full rounded-lg border border-[#c8ccbf] bg-white px-3 text-sm font-semibold text-[#3e4942] outline-none transition focus:border-[#4e6700] focus:ring-2 focus:ring-[#d6ff2a]/40"
+                >
+                  <option value="all">全部状态</option>
+                  <option value="active">进行中</option>
+                  <option value="blocked">阻塞</option>
+                  <option value="done">完成</option>
+                  <option value="draft">草稿</option>
+                </select>
+                  </label>
+
+                  <label className="block">
+                <span className="sr-only">负责人</span>
+                <select
+                  name="owner"
+                  defaultValue={ownerFilter}
+                  className="h-9 w-full rounded-lg border border-[#c8ccbf] bg-white px-3 text-sm font-semibold text-[#3e4942] outline-none transition focus:border-[#4e6700] focus:ring-2 focus:ring-[#d6ff2a]/40"
+                >
+                  <option value="all">全部负责人</option>
+                  <option value="unassigned">未分配</option>
+                  {assignees.map((assignee) => (
+                    <option key={assignee.id} value={assignee.id}>
+                      {assignee.name}
+                    </option>
+                  ))}
+                </select>
+                  </label>
+
+                  <label className="block">
+                <span className="sr-only">排序</span>
+                <select
+                  name="sort"
+                  defaultValue={queueSort}
+                  className="h-9 w-full rounded-lg border border-[#c8ccbf] bg-white px-3 text-sm font-semibold text-[#3e4942] outline-none transition focus:border-[#4e6700] focus:ring-2 focus:ring-[#d6ff2a]/40"
+                >
+                  <option value="updated">最近更新</option>
+                  <option value="progress">进度最低</option>
+                  <option value="priority">优先级最高</option>
+                  <option value="due">截止最近</option>
+                </select>
+                  </label>
+                </div>
+              </details>
+
+              <button
+                type="submit"
+                className="inline-flex h-9 items-center justify-center gap-2 rounded-lg bg-[#d6ff2a] px-3 text-sm font-bold text-[#101600] shadow-[0_8px_18px_rgba(92,120,0,0.16)] transition hover:bg-[#c6ee18] active:translate-y-0.5"
+              >
+                <Search className="size-4" aria-hidden />
+                筛选
+              </button>
+
+              {hasActiveQueueFilters ? (
+                <Link
+                  href="/"
+                  className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-[#c8ccbf] bg-white px-3 text-sm font-bold text-[#3e4942] transition hover:border-[#b7c0ad] hover:bg-[#f2ffd6]"
+                >
+                  <RotateCcw className="size-4" aria-hidden />
+                  清空
+                </Link>
+              ) : null}
+
+              <div className="flex h-9 items-center justify-end gap-1.5 lg:col-auto">
+                <span className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-[#b7c0ad] bg-white px-2 font-mono text-[11px] text-[#3e4942]">
+                  <CircleDot className="size-3.5 text-[#4e6700]" aria-hidden />
+                  总进度 {averageProgress}%
+                </span>
+                <span className="inline-flex h-8 items-center rounded-lg bg-[#171d1a] px-2 font-mono text-[11px] text-white">
+                  项目 {filteredTasks.length}/{tasks.length}
+                </span>
+              </div>
+            </form>
+
+            {tasks.length === 0 ? (
+              <EmptyState />
+            ) : filteredTasks.length === 0 ? (
+              <FilteredEmptyState />
+            ) : (
+              <>
+              <div className="grid gap-2 xl:hidden">
+                {filteredTasks.map((task, index) => (
+                  <TaskCard
+                    key={task.id}
+                    task={task}
+                    assignees={assignees}
+                    assigneeById={assigneeById}
+                    index={index}
+                  />
+                ))}
+              </div>
+              <DesktopProjectWorkspace
+                assigneeById={assigneeById}
+                assignees={assignees}
+                currentParams={{
+                  owner: ownerFilter,
+                  q: queueQuery,
+                  sort: queueSort,
+                  status: statusFilter,
+                }}
+                selectedTask={selectedTask}
+                tasks={filteredTasks}
+              />
+              </>
+            )}
+          </section>
+          </div>
         </section>
       </div>
     </main>
   );
 }
 
-function CreativeStat({
+function NavItem({
   icon: Icon,
   label,
-  value,
+  active,
 }: {
   icon: LucideIcon;
   label: string;
-  value: number | string;
+  active?: boolean;
 }) {
   return (
-    <div className="rounded-lg border border-white/10 bg-white/[0.05] p-3 backdrop-blur transition duration-300 hover:-translate-y-0.5 hover:border-[#b6ff4a]/50">
-      <div className="flex items-center justify-between gap-2">
-        <span className="text-xs font-medium text-zinc-400">{label}</span>
-        <Icon className="size-4 text-[#b6ff4a]" aria-hidden />
+    <a
+      href="#"
+      className={`relative flex h-10 items-center gap-3 rounded-xl px-3 text-sm font-semibold transition ${
+        active
+          ? "bg-[#f2ffd6] text-[#4e6700]"
+          : "text-[#5b655e] hover:bg-white hover:text-[#4e6700]"
+      }`}
+    >
+      {active ? (
+        <span className="absolute left-0 top-2 h-6 w-1 rounded-full bg-[#4e6700]" />
+      ) : null}
+      <Icon className="size-4" aria-hidden />
+      {label}
+    </a>
+  );
+}
+
+function OverviewTile({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: number | string;
+  tone?: "accent" | "danger";
+}) {
+  return (
+    <div
+      className={`rounded-2xl border p-3 shadow-[inset_2px_2px_7px_rgba(26,28,31,0.04),inset_-2px_-2px_7px_rgba(255,255,255,0.8)] ${
+        tone === "accent"
+          ? "border-[#d6ff2a]/70 bg-[#f2ffd6]"
+          : tone === "danger"
+            ? "border-[#ffdad6] bg-[#fff1ef]"
+            : "border-[#dddfd2] bg-[#f5f4ee]"
+      }`}
+    >
+      <div
+        className={`font-mono text-2xl font-bold leading-none ${
+          tone === "danger" ? "text-[#93000a]" : "text-[#151a18]"
+        }`}
+      >
+        {value}
       </div>
-      <div className="mt-2 font-mono text-2xl font-semibold text-white">{value}</div>
+      <div className="mt-1 text-[11px] font-semibold text-[#747b70]">
+        {label}
+      </div>
     </div>
   );
 }
 
-function QueuePill({
-  icon: Icon,
+function MobileMetric({
   label,
   value,
+  tone,
 }: {
-  icon: LucideIcon;
   label: string;
   value: number | string;
+  tone?: "accent";
 }) {
   return (
-    <span className="inline-flex h-10 min-w-28 items-center justify-between gap-3 rounded-md border border-zinc-200 bg-zinc-50 px-3 text-sm text-zinc-700">
-      <span className="inline-flex items-center gap-2">
-        <Icon className="size-4 text-zinc-500" aria-hidden />
+    <div
+      className={`rounded-2xl border p-3 shadow-[0_8px_20px_rgba(26,28,31,0.04)] ${
+        tone === "accent"
+          ? "border-[#d6ff2a]/70 bg-[#f2ffd6]"
+          : "border-[#dddfd2] bg-white"
+      }`}
+    >
+      <div className="font-mono text-2xl font-bold leading-none text-[#151a18]">
+        {value}
+      </div>
+      <div className="mt-1 text-[11px] font-semibold text-[#747b70]">
         {label}
-      </span>
-      <span className="font-mono font-semibold text-zinc-950">{value}</span>
-    </span>
+      </div>
+    </div>
   );
 }
 
@@ -313,30 +631,47 @@ function StatusMessages({
 }) {
   const message =
     params.created === "notion"
-      ? { tone: "success", text: "任务已发布到 Notion，并保存到本地。" }
+      ? { tone: "success", text: "任务已发布到协作空间，并保存到本地。" }
       : params.created === "local"
         ? {
             tone: "warn",
-            text: `任务已保存到本地，但 Notion 状态为 ${params.notion ?? "unknown"}。`,
+            text: "任务已保存到本地，但协作空间同步状态未知。",
           }
         : params.error
           ? { tone: "danger", text: "标题、摘要和步骤不能为空。" }
           : params.delete === "deleted_remote_and_local"
-            ? { tone: "success", text: "任务已从本地删除，Notion 页面已移到回收站。" }
+            ? {
+                tone: "success",
+                text: "任务已从本地删除，协作页面已移到回收站。",
+              }
             : params.delete === "deleted_local_remote_failed"
               ? {
                   tone: "warn",
-                  text: "本地任务已删除，但远程 Notion 页面没有成功移到回收站。",
+                  text: "本地任务已删除，但远程协作页面没有成功移到回收站。",
                 }
               : params.delete === "failed"
-                ? { tone: "danger", text: "删除失败，远程 Notion 页面没有成功处理。" }
-                : params.update?.includes("updated")
+                ? {
+                    tone: "danger",
+                    text: "删除失败，远程协作页面没有成功处理。",
+                  }
+                : params.update === "updated_local_remote_failed"
+                  ? {
+                      tone: "warn",
+                      text: "主任务已保存到数据库，但协作空间同步失败。",
+                    }
+                  : params.update?.includes("updated")
                   ? { tone: "success", text: "主任务已同步更新。" }
                   : params.update === "failed" || params.update === "invalid"
                     ? { tone: "danger", text: "主任务更新失败。" }
+                    : params.stepUpdate === "updated_local_remote_failed"
+                      ? {
+                          tone: "warn",
+                          text: "子任务已保存到数据库，但协作空间同步失败。",
+                        }
                     : params.stepUpdate?.includes("updated")
                       ? { tone: "success", text: "子任务已同步更新。" }
-                      : params.stepUpdate === "failed" || params.stepUpdate === "invalid"
+                      : params.stepUpdate === "failed" ||
+                          params.stepUpdate === "invalid"
                         ? { tone: "danger", text: "子任务更新失败。" }
                         : null;
 
@@ -344,12 +679,337 @@ function StatusMessages({
 
   const className =
     message.tone === "success"
-      ? "border-[#b6ff4a] bg-[#ecffd5] text-[#1b3600]"
+      ? "mb-4 border-[#4e6700]/25 bg-[#d6ff2a]/20 text-[#405236]"
       : message.tone === "warn"
-        ? "border-amber-200 bg-amber-50 text-amber-800"
-        : "border-red-200 bg-red-50 text-red-800";
+        ? "mb-4 border-amber-300 bg-amber-50 text-amber-800"
+        : "mb-4 border-[#ba1a1a]/25 bg-[#ffdad6] text-[#93000a]";
 
   return <StatusBanner className={className} text={message.text} />;
+}
+
+type QueueViewParams = {
+  owner: string;
+  q: string;
+  sort: QueueSort;
+  status: QueueStatusFilter;
+};
+
+function projectQueueHref(params: QueueViewParams, projectId: string) {
+  const nextParams = new URLSearchParams();
+  if (params.q) nextParams.set("q", params.q);
+  if (params.status !== "all") nextParams.set("status", params.status);
+  if (params.owner !== "all") nextParams.set("owner", params.owner);
+  if (params.sort !== "updated") nextParams.set("sort", params.sort);
+  nextParams.set("project", projectId);
+  return `/?${nextParams.toString()}`;
+}
+
+function DesktopProjectWorkspace({
+  tasks,
+  selectedTask,
+  assignees,
+  assigneeById,
+  currentParams,
+}: {
+  tasks: Task[];
+  selectedTask: Task;
+  assignees: Assignee[];
+  assigneeById: Map<string, Assignee>;
+  currentParams: QueueViewParams;
+}) {
+  return (
+    <div className="hidden gap-3 xl:grid xl:grid-cols-[360px_minmax(0,1fr)]">
+      <aside className="overflow-hidden rounded-2xl border border-[#dddfd2] bg-[#f4f3ed]">
+        <div className="flex items-center justify-between border-b border-[#dddfd2] px-3 py-3">
+          <div>
+            <div className="font-[var(--font-display)] text-sm font-bold text-[#151a18]">
+              项目列表
+            </div>
+            <div className="mt-0.5 text-xs text-[#747b70]">
+              选择项目查看流程与交付状态
+            </div>
+          </div>
+          <span className="rounded-full bg-[#171d1a] px-2.5 py-1 font-mono text-[11px] text-white">
+            {tasks.length}
+          </span>
+        </div>
+        <div className="max-h-[680px] space-y-1.5 overflow-y-auto p-2">
+          {tasks.map((task) => (
+            <DesktopProjectListItem
+              href={projectQueueHref(currentParams, task.id)}
+              key={task.id}
+              selected={task.id === selectedTask.id}
+              task={task}
+            />
+          ))}
+        </div>
+      </aside>
+
+      <DesktopProjectDetail
+        assigneeById={assigneeById}
+        assignees={assignees}
+        task={selectedTask}
+      />
+    </div>
+  );
+}
+
+function DesktopProjectListItem({
+  task,
+  href,
+  selected,
+}: {
+  task: Task;
+  href: string;
+  selected: boolean;
+}) {
+  const progress = completion(task);
+  const doneSteps = task.steps.filter(
+    (step) => step.completed || step.status === "done",
+  ).length;
+
+  return (
+    <Link
+      href={href}
+      className={`block rounded-xl border p-3 transition ${
+        selected
+          ? "border-[#b7c0ad] bg-[#fffefa] shadow-[0_12px_26px_rgba(26,28,31,0.08)] ring-1 ring-[#d6ff2a]/45"
+          : "border-transparent bg-transparent hover:border-[#c8ccbf] hover:bg-[#fffefa]"
+      }`}
+    >
+      <div className="mb-2 flex items-center gap-1.5">
+        {task.projectCode ? (
+          <span className="rounded-md bg-[#d6ff2a] px-1.5 py-0.5 font-mono text-[10px] font-bold text-[#101600]">
+            [{task.projectCode}]
+          </span>
+        ) : null}
+        <StatusBadgeUI status={task.status}>
+          {statusLabels[task.status]}
+        </StatusBadgeUI>
+        <PriorityBadge priority={task.priority}>
+          {priorityLabels[task.priority]}
+        </PriorityBadge>
+      </div>
+      <div className="truncate font-[var(--font-display)] text-sm font-bold text-[#151a18]">
+        {task.title}
+      </div>
+      <div className="mt-1 line-clamp-2 text-xs leading-5 text-[#747b70]">
+        {task.summary}
+      </div>
+      <div className="mt-3 flex items-center justify-between gap-3">
+        <span className="font-mono text-[11px] font-semibold text-[#747b70]">
+          {doneSteps}/{task.steps.length} 完成
+        </span>
+        <span className="font-mono text-xs font-bold text-[#4e6700]">
+          {progress}%
+        </span>
+      </div>
+      <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-[#dddfd2]">
+        <div
+          className="h-full rounded-full bg-[#d6ff2a] transition-[width] duration-700"
+          style={{ width: `${progress}%` }}
+        />
+      </div>
+    </Link>
+  );
+}
+
+function DesktopProjectDetail({
+  task,
+  assignees,
+  assigneeById,
+}: {
+  task: Task;
+  assignees: Assignee[];
+  assigneeById: Map<string, Assignee>;
+}) {
+  const progress = completion(task);
+  const taskUrl = notionPageUrl(task.notion.pageId);
+  const doneSteps = task.steps.filter(
+    (step) => step.completed || step.status === "done",
+  ).length;
+  const activeSteps = task.steps.filter(
+    (step) => step.status === "processing" || step.status === "in_progress",
+  ).length;
+  const dueLabel = task.targetPublishDate || task.dueDate || "未设日期";
+
+  return (
+    <article className="overflow-hidden rounded-2xl border border-[#c8ccbf] bg-[#fffefa] shadow-[0_14px_34px_rgba(26,28,31,0.06)]">
+      <div className="studio-dark grid gap-5 p-5 text-white 2xl:grid-cols-[minmax(0,1fr)_340px]">
+        <div className="min-w-0">
+          <div className="mb-4 flex flex-wrap items-center gap-1.5">
+            {task.projectCode ? (
+              <span className="rounded-lg bg-[#d6ff2a] px-2 py-1 font-mono text-[11px] font-bold text-[#101600] shadow-[0_0_14px_rgba(214,255,42,0.35)]">
+                [{task.projectCode}]
+              </span>
+            ) : null}
+            <span className="rounded-full border border-white/12 bg-white/8 px-2 py-1 text-[11px] font-semibold text-white/72">
+              {statusLabels[task.status]}
+            </span>
+            <span className="rounded-full border border-white/12 bg-white/8 px-2 py-1 text-[11px] font-semibold text-white/72">
+              {priorityLabels[task.priority]}优先级
+            </span>
+            {task.kind === "video" ? (
+              <span className="rounded-full border border-white/12 bg-white/8 px-2 py-1 text-[11px] font-semibold text-white/72">
+                视频
+              </span>
+            ) : null}
+          </div>
+          <h2 className="font-[var(--font-display)] text-3xl font-bold leading-tight tracking-[-0.02em]">
+            {task.title}
+          </h2>
+          <p className="mt-3 max-w-3xl text-sm leading-6 text-white/55">
+            {task.summary}
+          </p>
+          <div className="mt-6 grid gap-2 sm:grid-cols-3">
+            <DarkInfoItem label="负责人">
+              {assigneeNames(assigneeById, task.assigneeIds, task.assigneeId)}
+            </DarkInfoItem>
+            <DarkInfoItem label="截止">
+              {dueLabel}
+            </DarkInfoItem>
+            <DarkInfoItem label="平台">
+              {displayPlatforms(task.platforms)}
+            </DarkInfoItem>
+          </div>
+        </div>
+
+        <div className="rounded-2xl border border-white/10 bg-white/[0.07] p-4 shadow-[inset_0_1px_rgba(255,255,255,0.08),0_18px_34px_rgba(0,0,0,0.16)]">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <div className="font-mono text-[11px] font-semibold text-white/42">
+                项目进度
+              </div>
+              <div className="mt-2 flex items-end gap-2">
+                <span className="font-mono text-5xl font-bold leading-none text-white">
+                  {progress}
+                </span>
+                <span className="pb-1 font-mono text-base font-bold text-[#d6ff2a]">
+                  %
+                </span>
+              </div>
+            </div>
+            <span className="inline-flex size-11 items-center justify-center rounded-2xl bg-[#d6ff2a] text-[#101600] shadow-[0_0_18px_rgba(214,255,42,0.28)]">
+              <Gauge className="size-5" aria-hidden />
+            </span>
+          </div>
+          <div className="mt-4 h-2 overflow-hidden rounded-full bg-white/12">
+            <div
+              className="h-full rounded-full bg-[#d6ff2a] shadow-[0_0_14px_rgba(214,255,42,0.42)] transition-[width] duration-700"
+              style={{ width: `${progress}%` }}
+            />
+          </div>
+          <div className="mt-4 grid grid-cols-2 gap-2">
+            <DarkStat label="完成" value={`${doneSteps}/${task.steps.length}`} />
+            <DarkStat label="处理中" value={activeSteps} />
+          </div>
+          <div className="mt-4 flex items-center gap-2">
+            {taskUrl ? (
+              <a
+                href={taskUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex h-9 items-center justify-center gap-2 rounded-xl bg-white px-3 text-xs font-bold text-[#151a18] transition hover:bg-[#f2ffd6]"
+              >
+                <ExternalLink className="size-3.5" aria-hidden />
+                打开页面
+              </a>
+            ) : null}
+            <DeleteTaskForm
+              action={deleteTaskAction}
+              taskId={task.id}
+              hasNotionPage={Boolean(task.notion.pageId)}
+            />
+          </div>
+        </div>
+      </div>
+
+      <DesktopWorkflowPanel
+        assigneeById={assigneeById}
+        assignees={assignees}
+        task={task}
+      />
+    </article>
+  );
+}
+
+function DarkInfoItem({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="rounded-2xl border border-white/10 bg-white/[0.06] p-3">
+      <div className="text-[11px] font-semibold text-white/35">{label}</div>
+      <div className="mt-1 truncate text-sm font-bold text-white/78">
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function DarkStat({ label, value }: { label: string; value: number | string }) {
+  return (
+    <div className="rounded-xl bg-white/[0.07] p-3">
+      <div className="font-mono text-xl font-bold leading-none text-white">
+        {value}
+      </div>
+      <div className="mt-1 text-[11px] font-semibold text-white/36">
+        {label}
+      </div>
+    </div>
+  );
+}
+
+function DesktopWorkflowPanel({
+  task,
+  assignees,
+  assigneeById,
+}: {
+  task: Task;
+  assignees: Assignee[];
+  assigneeById: Map<string, Assignee>;
+}) {
+  return (
+    <div className="bg-white p-4">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <div>
+          <div className="font-[var(--font-display)] text-base font-bold text-[#151a18]">
+            流程轨道
+          </div>
+          <div className="mt-0.5 text-xs text-[#747b70]">
+            展开步骤可直接编辑负责人、状态和截止时间。
+          </div>
+        </div>
+        <span className="inline-flex h-8 items-center rounded-full bg-[#f2ffd6] px-3 font-mono text-[11px] font-bold text-[#4e6700]">
+          {task.steps.length} 个步骤
+        </span>
+      </div>
+      <div className="grid gap-2">
+        {task.steps.map((step) => (
+          <StepWorkflowCard
+            key={step.id}
+            task={task}
+            step={step}
+            assignees={assignees}
+            assigneeById={assigneeById}
+          />
+        ))}
+      </div>
+      <details className="group/edit mt-4 overflow-hidden rounded-2xl border border-[#dddfd2] bg-[#fffefa]">
+        <summary className="flex cursor-pointer list-none items-center justify-between px-4 py-3 text-xs font-bold text-[#747b70] transition hover:bg-[#ebeae1] hover:text-[#4e6700]">
+          <span className="flex items-center gap-2">
+            <PenLine className="size-3.5" aria-hidden />
+            编辑主任务
+          </span>
+          <ChevronDown className="size-4 transition group-open/edit:rotate-180" />
+        </summary>
+        <TaskEditForm assignees={assignees} task={task} />
+      </details>
+    </div>
+  );
 }
 
 function TaskCard({
@@ -365,73 +1025,95 @@ function TaskCard({
 }) {
   const progress = completion(task);
   const taskUrl = notionPageUrl(task.notion.pageId);
+  const doneSteps = task.steps.filter(
+    (step) => step.completed || step.status === "done",
+  ).length;
+  const activeSteps = task.steps.filter(
+    (step) => step.status === "processing" || step.status === "in_progress",
+  ).length;
+  const dueLabel = task.targetPublishDate || task.dueDate || "未设日期";
+  const platformLabel = displayPlatforms(task.platforms);
 
   return (
     <article
-      className="animate-rise overflow-hidden rounded-lg border border-zinc-200 bg-white shadow-sm transition duration-300 hover:-translate-y-0.5 hover:border-zinc-300 hover:shadow-xl hover:shadow-zinc-950/5"
-      style={{ animationDelay: `${Math.min(index * 70, 280)}ms` }}
+      className="animate-rise overflow-hidden rounded-xl border border-[#c8ccbf] bg-white shadow-[0_8px_24px_rgba(26,28,31,0.04)] transition hover:border-[#b7c0ad] hover:shadow-[0_14px_34px_rgba(26,28,31,0.07)]"
+      style={{ animationDelay: `${Math.min(index * 80, 400)}ms` }}
     >
-      <div className="grid gap-5 border-b border-zinc-200 p-4 sm:p-5 xl:grid-cols-[minmax(0,1fr)_310px]">
-        <div className="min-w-0">
-          <div className="mb-3 flex flex-wrap items-center gap-2">
+      <div className="grid gap-3 p-3 xl:grid-cols-[minmax(320px,1fr)_220px_220px_auto] xl:items-center">
+        <div className="min-w-0 xl:border-r xl:border-[#e7e5db] xl:pr-4">
+          <div className="mb-2 flex flex-wrap items-center gap-1.5">
             {task.projectCode ? (
-              <Badge className="border-zinc-950 bg-zinc-950 text-white">
+              <span className="inline-flex h-6 items-center rounded-lg bg-[#d6ff2a] px-2 font-mono text-[11px] font-bold text-[#101600] shadow-[0_0_10px_rgba(214,255,42,0.26)]">
                 [{task.projectCode}]
-              </Badge>
+              </span>
             ) : null}
-            <Badge className={badgeClass(task.status)}>{statusLabels[task.status]}</Badge>
-            <Badge className={priorityClass(task.priority)}>
-              <Flag className="size-3" aria-hidden />
+            <StatusBadgeUI status={task.status}>
+              {statusLabels[task.status]}
+            </StatusBadgeUI>
+            <PriorityBadge priority={task.priority}>
               {priorityLabels[task.priority]}
-            </Badge>
+            </PriorityBadge>
             {task.kind === "video" ? (
-              <Badge className="border-zinc-200 bg-zinc-50 text-zinc-600">
+              <span className="inline-flex h-5 items-center gap-1 rounded-full border border-[#c8ccbf] bg-[#ebeae1] px-1.5 text-[10px] font-semibold text-[#5b655e]">
                 <Film className="size-3" aria-hidden />
                 视频
-              </Badge>
+              </span>
             ) : null}
             {task.contentSeries ? (
-              <Badge className="border-zinc-200 bg-white text-zinc-600">
+              <span className="inline-flex h-5 items-center rounded-full border border-[#c8ccbf] bg-[#ebeae1] px-1.5 text-[10px] font-semibold text-[#5b655e]">
                 {task.contentSeries}
-              </Badge>
+              </span>
             ) : null}
           </div>
-          <h3 className="text-xl font-semibold leading-tight text-zinc-950">
+
+          <h3 className="truncate font-[var(--font-display)] text-lg font-bold leading-tight text-[#151a18]">
             {task.title}
           </h3>
-          <p className="mt-2 max-w-4xl text-sm leading-6 text-zinc-600">
+          <p className="mt-1 line-clamp-1 text-sm leading-6 text-[#747b70]">
             {task.summary}
           </p>
-          <div className="mt-4 grid gap-2 text-xs text-zinc-600 sm:grid-cols-2 xl:grid-cols-4">
-            <InfoPill icon={UserRound} label={assigneeName(assigneeById, task.assigneeId)} />
-            <InfoPill icon={CalendarDays} label={task.dueDate || "未设截止"} />
-            <InfoPill icon={Clock3} label={task.targetPublishDate || "未设发布"} />
-            <InfoPill icon={Layers3} label={task.platforms?.length ? task.platforms.join(" / ") : "未选平台"} />
-          </div>
         </div>
 
-        <div className="space-y-3 xl:justify-self-end xl:w-[310px]">
-          <div className="rounded-md border border-zinc-200 bg-zinc-50 p-3">
-            <div className="mb-2 flex items-center justify-between text-xs text-zinc-500">
-              <span>完成度</span>
-              <span className="font-mono text-zinc-950">{progress}%</span>
-            </div>
-            <ProgressBar progress={progress} />
-          </div>
-          <div className="grid grid-cols-[minmax(0,1fr)_104px] gap-2">
+        <div className="rounded-xl border border-[#e7e5db] bg-[#f5f4ee] p-3">
+          <QueueProgress
+            activeSteps={activeSteps}
+            doneSteps={doneSteps}
+            progress={progress}
+            totalSteps={task.steps.length}
+          />
+        </div>
+
+        <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-1">
+          <MetaItem icon={UserRound}>
+            {assigneeNames(assigneeById, task.assigneeIds, task.assigneeId)}
+          </MetaItem>
+          <MetaItem icon={CalendarDays}>{dueLabel}</MetaItem>
+        </div>
+
+        <div className="flex items-center justify-between gap-3 xl:justify-end">
+          <span className="inline-flex min-w-0 items-center gap-1.5 truncate text-xs font-semibold text-[#747b70] xl:hidden">
+            <Layers3 className="size-3.5 shrink-0 text-[#4e6700]" aria-hidden />
+            <span className="truncate">{platformLabel}</span>
+          </span>
+          <div className="flex items-center gap-1.5">
             {taskUrl ? (
               <a
                 href={taskUrl}
                 target="_blank"
                 rel="noreferrer"
                 className={secondaryButtonClass}
+                title="打开协作页面"
               >
-                <ExternalLink className="size-4" aria-hidden />
-                Notion
+                <ExternalLink className="size-3.5" aria-hidden />
+                <span className="xl:sr-only">打开页面</span>
               </a>
             ) : (
-              <span className="inline-flex h-10 min-w-0 items-center justify-center rounded-md border border-zinc-200 px-3 text-sm font-medium text-zinc-400">
-                Local
+              <span
+                className="inline-flex h-8 items-center justify-center rounded-lg border border-[#c8ccbf] bg-[#ebeae1] px-2 text-xs font-semibold text-[#747b70] xl:size-8 xl:px-0"
+                title="本地记录"
+              >
+                <span className="xl:sr-only">本地记录</span>
+                <FileText className="hidden size-3.5 xl:block" aria-hidden />
               </span>
             )}
             <DeleteTaskForm
@@ -443,94 +1125,224 @@ function TaskCard({
         </div>
       </div>
 
-      <details className="group border-b border-zinc-200">
-        <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 text-sm font-medium text-zinc-700 transition hover:bg-zinc-50 sm:px-5">
-          <span className="flex min-w-0 items-center gap-2">
-            <PenLine className="size-4 text-zinc-500" aria-hidden />
-            <span className="truncate">编辑主任务</span>
+      <div className="border-t border-[#e7e5db] bg-[#fffefa]">
+        <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2">
+          <span className="hidden min-w-0 items-center gap-1.5 truncate text-xs font-semibold text-[#747b70] xl:flex">
+            <Layers3 className="size-3.5 shrink-0 text-[#4e6700]" aria-hidden />
+            <span className="truncate">{platformLabel}</span>
           </span>
-          <span className="inline-flex size-8 shrink-0 items-center justify-center rounded-md border border-zinc-200 transition group-open:rotate-45 group-open:bg-zinc-950 group-open:text-white">
-            <ArrowUpRight className="size-4" aria-hidden />
-          </span>
-        </summary>
-        <form action={updateTaskDetailsAction} className="grid gap-4 border-t border-zinc-200 bg-zinc-50 p-4 sm:p-5 xl:grid-cols-4">
-          <input type="hidden" name="taskId" value={task.id} />
-          <Field label="标题">
-            <input name="title" defaultValue={task.title} className={inputClass} required />
-          </Field>
-          <Field label="状态">
-            <select name="status" defaultValue={task.status} className={inputClass}>
-              <option value="draft">草稿</option>
-              <option value="active">进行中</option>
-              <option value="blocked">阻塞</option>
-              <option value="done">完成</option>
-            </select>
-          </Field>
-          <Field label="优先级">
-            <select name="priority" defaultValue={task.priority} className={inputClass}>
-              <option value="low">低</option>
-              <option value="medium">中</option>
-              <option value="high">高</option>
-            </select>
-          </Field>
-          <Field label="负责人">
-            <AssigneeSelect assignees={assignees} name="assigneeId" defaultValue={task.assigneeId} />
-          </Field>
-          <Field label="视频系列">
-            <input name="contentSeries" defaultValue={task.contentSeries} className={inputClass} />
-          </Field>
-          <Field label="周期">
-            <input name="weekLabel" defaultValue={task.weekLabel} className={inputClass} />
-          </Field>
-          <Field label="整体截止">
-            <input name="dueDate" type="date" defaultValue={task.dueDate} className={inputClass} />
-          </Field>
-          <Field label="目标发布">
-            <input name="targetPublishDate" type="date" defaultValue={task.targetPublishDate} className={inputClass} />
-          </Field>
-          <div className="xl:col-span-2">
-            <PlatformChecks selected={task.platforms ?? []} />
-          </div>
-          <div className="xl:col-span-3">
-            <Field label="摘要">
-              <textarea name="summary" defaultValue={task.summary} className={textareaClass} required />
-            </Field>
-          </div>
-          <div className="flex items-end">
-            <button type="submit" className={primaryButtonClass}>
-              <CheckCircle2 className="size-4" aria-hidden />
-              保存主任务
-            </button>
-          </div>
-        </form>
-      </details>
-
-      <div>
-        <div className="hidden grid-cols-[110px_1.4fr_128px_160px_126px_110px] border-b border-zinc-200 bg-zinc-950 px-5 py-2 text-xs font-medium uppercase tracking-wide text-zinc-400 lg:grid">
-          <div>阶段</div>
-          <div>子任务</div>
-          <div>状态</div>
-          <div>负责人</div>
-          <div>截止日期</div>
-          <div>操作</div>
-        </div>
-        <div>
-          {task.steps.map((step) => (
-            <StepRow
-              key={step.id}
-              task={task}
-              step={step}
-              assignees={assignees}
+          <details className="group w-full xl:w-auto xl:flex-1">
+            <summary className="flex cursor-pointer list-none items-center justify-between rounded-lg px-1 py-1 text-xs font-bold text-[#4e6700] transition hover:bg-[#f2ffd6]">
+              <span className="flex items-center gap-2">
+                <ListChecks className="size-3.5" aria-hidden />
+                展开项目管理
+                <span className="rounded-full bg-[#f2ffd6] px-2 py-0.5 font-mono text-[10px] text-[#747b70]">
+                  流程 {task.steps.length} 步
+                </span>
+              </span>
+              <ChevronDown className="size-4 transition group-open:rotate-180" />
+            </summary>
+            <TaskDetailsPanel
               assigneeById={assigneeById}
+              assignees={assignees}
+              task={task}
             />
-          ))}
+          </details>
         </div>
       </div>
     </article>
   );
 }
 
-function StepRow({
+function TaskDetailsPanel({
+  task,
+  assignees,
+  assigneeById,
+}: {
+  task: Task;
+  assignees: Assignee[];
+  assigneeById: Map<string, Assignee>;
+}) {
+  return (
+    <div className="mt-2 overflow-hidden rounded-xl border border-[#dddfd2] bg-white shadow-[0_10px_24px_rgba(26,28,31,0.04)]">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#e7e5db] bg-[#f5f4ee] px-4 py-3">
+        <div>
+          <div className="font-[var(--font-display)] text-sm font-bold text-[#151a18]">
+            流程轨道
+          </div>
+          <div className="mt-0.5 text-xs text-[#747b70]">
+            按脚本、音频、素材、剪辑、发布顺序推进。
+          </div>
+        </div>
+        <span className="inline-flex h-7 items-center rounded-full bg-[#f2ffd6] px-2.5 font-mono text-[11px] font-bold text-[#4e6700]">
+          {task.steps.length} 个步骤
+        </span>
+      </div>
+      <div className="grid gap-2 p-3">
+        {task.steps.map((step) => (
+          <StepWorkflowCard
+            key={step.id}
+            task={task}
+            step={step}
+            assignees={assignees}
+            assigneeById={assigneeById}
+          />
+        ))}
+      </div>
+      <details className="group/edit border-t border-[#e7e5db] bg-[#fffefa]">
+        <summary className="flex cursor-pointer list-none items-center justify-between px-4 py-3 text-xs font-bold text-[#747b70] transition hover:bg-[#ebeae1] hover:text-[#4e6700]">
+          <span className="flex items-center gap-2">
+            <PenLine className="size-3.5" aria-hidden />
+            编辑主任务
+          </span>
+          <ChevronDown className="size-4 transition group-open/edit:rotate-180" />
+        </summary>
+        <TaskEditForm assignees={assignees} task={task} />
+      </details>
+    </div>
+  );
+}
+
+function TaskEditForm({
+  task,
+  assignees,
+}: {
+  task: Task;
+  assignees: Assignee[];
+}) {
+  return (
+    <form
+      action={updateTaskDetailsAction}
+      className="border-t border-[#e7e5db] bg-[#f5f4ee] p-4 sm:p-5"
+    >
+      <input type="hidden" name="taskId" value={task.id} />
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <Field label="标题">
+          <input
+            name="title"
+            defaultValue={task.title}
+            className={inputClass}
+            required
+          />
+        </Field>
+        <Field label="状态">
+          <select name="status" defaultValue={task.status} className={inputClass}>
+            <option value="draft">草稿</option>
+            <option value="active">进行中</option>
+            <option value="blocked">阻塞</option>
+            <option value="done">完成</option>
+          </select>
+        </Field>
+        <Field label="优先级">
+          <select
+            name="priority"
+            defaultValue={task.priority}
+            className={inputClass}
+          >
+            <option value="low">低</option>
+            <option value="medium">中</option>
+            <option value="high">高</option>
+          </select>
+        </Field>
+        <Field label="负责人">
+          <AssigneeChecks
+            assignees={assignees}
+            name="assigneeIds"
+            selected={task.assigneeIds ?? (task.assigneeId ? [task.assigneeId] : [])}
+          />
+        </Field>
+        <Field label="视频系列">
+          <input
+            name="contentSeries"
+            defaultValue={task.contentSeries}
+            className={inputClass}
+          />
+        </Field>
+        <Field label="周期">
+          <input
+            name="weekLabel"
+            defaultValue={task.weekLabel}
+            className={inputClass}
+          />
+        </Field>
+        <Field label="整体截止">
+          <input
+            name="dueDate"
+            type="date"
+            defaultValue={task.dueDate}
+            className={inputClass}
+          />
+        </Field>
+        <Field label="目标发布">
+          <input
+            name="targetPublishDate"
+            type="date"
+            defaultValue={task.targetPublishDate}
+            className={inputClass}
+          />
+        </Field>
+      </div>
+      <div className="mt-3">
+        <PlatformChecks selected={task.platforms ?? []} />
+      </div>
+      <div className="mt-3">
+        <Field label="摘要">
+          <textarea
+            name="summary"
+            defaultValue={task.summary}
+            className={textareaClass}
+            required
+          />
+        </Field>
+      </div>
+      <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <PendingFormStatus text="正在同步主任务" className="sm:max-w-xs" />
+        <PendingSubmitButton
+          className={primaryButtonClass}
+          pendingText="正在保存主任务"
+        >
+          <CheckCircle2 className="size-3.5" aria-hidden />
+          保存主任务
+        </PendingSubmitButton>
+      </div>
+    </form>
+  );
+}
+
+function QueueProgress({
+  activeSteps,
+  doneSteps,
+  progress,
+  totalSteps,
+}: {
+  activeSteps: number;
+  doneSteps: number;
+  progress: number;
+  totalSteps: number;
+}) {
+  return (
+    <div className="min-w-0">
+      <div className="mb-1.5 flex items-center justify-between gap-3">
+        <div className="truncate text-xs font-semibold text-[#747b70]">
+          已完成 {doneSteps}/{totalSteps}
+          <span className="mx-1.5 text-[#b7c0ad]">·</span>
+          处理中 {activeSteps}
+        </div>
+        <div className="font-mono text-sm font-bold text-[#4e6700]">
+          {progress}%
+        </div>
+      </div>
+      <div className="h-1.5 overflow-hidden rounded-full bg-[#dddfd2]">
+        <div
+          className="h-full rounded-full bg-[#d6ff2a] shadow-[0_0_10px_rgba(214,255,42,0.42)] transition-[width] duration-700"
+          style={{ width: `${progress}%` }}
+        />
+      </div>
+    </div>
+  );
+}
+
+function StepWorkflowCard({
   task,
   step,
   assignees,
@@ -545,85 +1357,142 @@ function StepRow({
   const stepUrl = notionPageUrl(step.notion?.pageId);
 
   return (
-    <details className="group border-b border-zinc-100 last:border-b-0">
-      <summary className="grid cursor-pointer list-none gap-3 px-4 py-4 text-sm transition hover:bg-zinc-50 sm:px-5 lg:grid-cols-[110px_1.4fr_128px_160px_126px_110px] lg:items-center">
-        <div className="flex items-center justify-between gap-3 lg:block">
-          <span className="text-xs font-medium uppercase tracking-wide text-zinc-400 lg:hidden">阶段</span>
-          <span className="truncate text-zinc-600">{step.phase ?? "执行"}</span>
-        </div>
+    <details className="group/flow overflow-hidden rounded-xl border border-[#dddfd2] bg-white shadow-[0_8px_18px_rgba(26,28,31,0.03)] transition open:border-[#b7c0ad] open:shadow-[0_12px_26px_rgba(26,28,31,0.06)]">
+      <summary className="grid cursor-pointer list-none gap-3 p-3 transition hover:bg-[#fffefa] sm:grid-cols-[86px_minmax(0,1fr)_120px_150px_110px_auto] sm:items-center">
+        <span className="w-fit rounded-full bg-[#f2ffd6] px-2 py-0.5 font-mono text-[10px] font-bold text-[#4e6700]">
+          {step.phase ?? "执行"}
+        </span>
+
         <div className="min-w-0">
-          <div className="font-medium text-zinc-950 lg:truncate">{step.title}</div>
-          <div className="mt-1 text-xs leading-5 text-zinc-500 lg:truncate">{step.description}</div>
+          <div className="truncate font-[var(--font-display)] text-base font-bold leading-snug text-[#151a18]">
+            {step.title}
+          </div>
+          {step.description ? (
+            <p className="mt-1 line-clamp-1 text-xs leading-5 text-[#747b70]">
+              {step.description}
+            </p>
+          ) : null}
         </div>
-        <div className="flex items-center justify-between gap-3 lg:block">
-          <span className="text-xs font-medium uppercase tracking-wide text-zinc-400 lg:hidden">状态</span>
-          <Badge className={badgeClass(status)}>{stepStatusLabels[status]}</Badge>
-        </div>
-        <div className="flex items-center justify-between gap-3 text-zinc-600 lg:block lg:truncate">
-          <span className="text-xs font-medium uppercase tracking-wide text-zinc-400 lg:hidden">负责人</span>
-          <span>{assigneeName(assigneeById, step.assigneeId ?? task.assigneeId)}</span>
-        </div>
-        <div className="flex items-center justify-between gap-3 text-zinc-500 lg:block">
-          <span className="text-xs font-medium uppercase tracking-wide text-zinc-400 lg:hidden">截止</span>
-          <span>{step.dueDate || "未设置"}</span>
-        </div>
-        <div className="flex items-center gap-2">
+
+        <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#747b70]">
+          <StatusDot status={status} />
+          {stepStatusLabels[status]}
+        </span>
+
+        <span className="min-w-0 truncate text-xs font-semibold text-[#747b70]">
+          {assigneeNames(
+            assigneeById,
+            step.assigneeIds,
+            step.assigneeId ?? task.assigneeId,
+          )}
+        </span>
+
+        <span className="text-xs font-semibold text-[#747b70]">
+          {step.dueDate || "未设截止"}
+        </span>
+
+        <div className="flex items-center gap-1.5 sm:justify-end">
           {stepUrl ? (
             <a
               href={stepUrl}
               target="_blank"
               rel="noreferrer"
-              className="inline-flex size-9 items-center justify-center rounded-md border border-zinc-200 text-zinc-600 transition hover:border-zinc-950 hover:bg-zinc-950 hover:text-white"
-              title="打开 Notion 子任务"
+              className="inline-flex size-7 items-center justify-center rounded-lg text-[#747b70] transition hover:bg-[#f2ffd6] hover:text-[#4e6700]"
+              title="打开子任务页面"
             >
-              <ExternalLink className="size-4" aria-hidden />
+              <ExternalLink className="size-3.5" aria-hidden />
             </a>
           ) : null}
-          <span className="inline-flex size-9 items-center justify-center rounded-md border border-zinc-200 text-zinc-600 transition group-open:rotate-45 group-open:border-zinc-950 group-open:bg-zinc-950 group-open:text-white">
-            <PenLine className="size-4" aria-hidden />
-          </span>
+          <ChevronDown className="size-4 text-[#747b70] transition group-open/flow:rotate-180" />
         </div>
       </summary>
-      <form action={updateStepAction} className="grid gap-4 border-t border-zinc-100 bg-zinc-50 px-4 py-4 sm:px-5 xl:grid-cols-5">
+
+      <form
+        action={updateStepAction}
+        className="border-t border-[#e7e5db] bg-[#f5f4ee] p-4 sm:p-5"
+      >
         <input type="hidden" name="taskId" value={task.id} />
         <input type="hidden" name="stepId" value={step.id} />
-        <Field label="阶段">
-          <input name="phase" defaultValue={step.phase} className={inputClass} />
-        </Field>
-        <Field label="标题">
-          <input name="title" defaultValue={step.title} className={inputClass} required />
-        </Field>
-        <Field label="状态">
-          <select name="status" defaultValue={status} className={inputClass}>
-            <option value="todo">待开始</option>
-            <option value="processing">处理中</option>
-            <option value="in_progress">进行中</option>
-            <option value="blocked">阻塞</option>
-            <option value="done">完成</option>
-          </select>
-        </Field>
-        <Field label="负责人">
-          <AssigneeSelect
-            assignees={assignees}
-            name="assigneeId"
-            defaultValue={step.assigneeId ?? task.assigneeId}
-          />
-        </Field>
-        <Field label="截止日期">
-          <input name="dueDate" type="date" defaultValue={step.dueDate} className={inputClass} />
-        </Field>
-        <div className="xl:col-span-4">
-          <Field label="子任务说明">
-            <textarea name="description" defaultValue={step.description} className={textareaClass} />
+        <div className="mb-4 flex items-center justify-between gap-3">
+          <div>
+            <div className="font-[var(--font-display)] text-sm font-bold text-[#151a18]">
+              编辑步骤
+            </div>
+            <div className="mt-0.5 text-xs text-[#747b70]">
+              调整状态、负责人和交付说明。
+            </div>
+          </div>
+          <span className="rounded-full bg-[#f2ffd6] px-2.5 py-1 font-mono text-[10px] font-bold text-[#4e6700]">
+            {step.phase ?? "执行"}
+          </span>
+        </div>
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+          <Field label="阶段">
+            <input
+              name="phase"
+              defaultValue={step.phase}
+              className={inputClass}
+            />
+          </Field>
+          <Field label="标题" className="sm:col-span-2">
+            <input
+              name="title"
+              defaultValue={step.title}
+              className={inputClass}
+              required
+            />
+          </Field>
+          <Field label="状态">
+            <select name="status" defaultValue={status} className={inputClass}>
+              <option value="todo">待开始</option>
+              <option value="processing">处理中</option>
+              <option value="in_progress">进行中</option>
+              <option value="blocked">阻塞</option>
+              <option value="done">完成</option>
+            </select>
+          </Field>
+          <Field label="负责人" className="sm:col-span-2">
+            <AssigneeChecks
+              assignees={assignees}
+              name="assigneeIds"
+              selected={
+                step.assigneeIds ??
+                (step.assigneeId ?? task.assigneeId
+                  ? [step.assigneeId ?? task.assigneeId].filter(
+                      (id): id is string => Boolean(id),
+                    )
+                  : [])
+              }
+            />
+          </Field>
+          <Field label="截止日期">
+            <input
+              name="dueDate"
+              type="date"
+              defaultValue={step.dueDate}
+              className={inputClass}
+            />
+          </Field>
+          <Field label="子任务说明" className="sm:col-span-2 xl:col-span-3">
+            <textarea
+              name="description"
+              defaultValue={step.description}
+              className={textareaClass}
+            />
           </Field>
         </div>
-        <div className="flex items-end">
-          <button type="submit" className={primaryButtonClass}>
-            <CheckCircle2 className="size-4" aria-hidden />
+        <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <PendingFormStatus text="正在同步子任务" />
+          <PendingSubmitButton
+            className="inline-flex h-10 items-center justify-center gap-2 rounded-full bg-[#d6ff2a] px-5 text-xs font-bold text-[#101600] shadow-[0_10px_20px_rgba(92,120,0,0.16)] transition hover:bg-[#c6ee18] active:translate-y-0.5"
+            pendingText="正在保存子任务"
+          >
+            <CheckCircle2 className="size-3.5" aria-hidden />
             保存子任务
-          </button>
+          </PendingSubmitButton>
         </div>
       </form>
+
       {step.audioSegments?.length ? (
         <AudioSegmentPanel segments={step.audioSegments} />
       ) : null}
@@ -637,106 +1506,178 @@ function AudioSegmentPanel({
   segments: NonNullable<Task["steps"][number]["audioSegments"]>;
 }) {
   return (
-    <div className="border-t border-zinc-100 bg-white px-4 py-4 sm:px-5">
+    <div className="border-t border-[#e7e5db] bg-white px-4 py-4 sm:px-5">
       <div className="mb-3 flex items-center justify-between gap-3">
         <div>
-          <div className="text-sm font-semibold text-zinc-950">Notion 音频分段</div>
-          <div className="mt-1 text-xs text-zinc-500">
-            分段会写入现有 Notion 音频/素材页面，不再创建额外子任务。
+          <div className="text-sm font-semibold text-[#151a18]">
+            音频分段
+          </div>
+          <div className="mt-0.5 text-xs text-[#747b70]">
+            分段会写入现有协作页面。
           </div>
         </div>
-        <Badge className="border-[#b6ff4a] bg-[#eaffc8] text-[#1c3b00]">
+        <span className="inline-flex h-6 items-center rounded-full bg-[#d6ff2a] px-2 font-mono text-[11px] font-semibold text-[#101600]">
           {segments.length} 段
-        </Badge>
+        </span>
       </div>
       <div className="grid gap-2 md:grid-cols-2">
-        {segments.map((segment) => {
-          return (
-            <div
-              key={segment.id}
-              className="rounded-md border border-zinc-200 bg-zinc-50 p-3 text-sm"
-            >
-              <div className="mb-2 flex items-center justify-between gap-2">
-                <span className="font-mono text-xs font-semibold text-zinc-500">
-                  SEG {String(segment.index).padStart(2, "0")}
-                </span>
-                <span className="text-xs text-zinc-500">页面内分段</span>
-              </div>
-              <p className="line-clamp-3 leading-6 text-zinc-700">{segment.text}</p>
-            </div>
-          );
-        })}
+        {segments.map((segment) => (
+          <div
+            key={segment.id}
+            className="rounded-xl border border-[#dddfd2] bg-[#f5f4ee] p-3"
+          >
+            <span className="mb-1.5 block font-mono text-[10px] font-bold text-[#4e6700]">
+              段落 {String(segment.index).padStart(2, "0")}
+            </span>
+            <p className="line-clamp-3 text-xs leading-5 text-[#5b655e]">
+              {segment.text}
+            </p>
+          </div>
+        ))}
       </div>
     </div>
   );
 }
 
-function ProgressBar({ progress }: { progress: number }) {
+function StatusDot({ status }: { status: StepStatus | TaskStatus }) {
+  const color =
+    status === "done"
+      ? "bg-[#d6ff2a] shadow-[#d6ff2a]/60"
+      : status === "active" ||
+          status === "in_progress" ||
+          status === "processing"
+        ? "bg-[#a6ce1c] shadow-[#a6ce1c]/60"
+        : status === "blocked"
+          ? "bg-[#ba1a1a] shadow-[#ba1a1a]/50"
+          : "bg-white/24 shadow-white/20";
   return (
-    <div className="h-2 overflow-hidden rounded-full bg-zinc-200">
-      <div
-        className="h-full rounded-full bg-[#b6ff4a] transition-[width] duration-700 ease-out"
-        style={{ width: `${progress}%` }}
-      />
-    </div>
+    <span
+      className={`inline-block size-2 rounded-full shadow-[0_0_8px] ${color}`}
+    />
   );
 }
 
-function InfoPill({ icon: Icon, label }: { icon: LucideIcon; label: string }) {
+function StatusBadgeUI({
+  status,
+  children,
+}: {
+  status: TaskStatus;
+  children: React.ReactNode;
+}) {
+  const cls =
+    status === "done"
+      ? "border-[#4e6700]/25 bg-[#f2ffd6] text-[#4e6700]"
+      : status === "active"
+        ? "border-[#4e6700]/25 bg-[#d6ff2a]/20 text-[#4e6700]"
+        : status === "blocked"
+          ? "border-[#ba1a1a]/25 bg-[#ffdad6] text-[#93000a]"
+          : "border-[#c8ccbf] bg-[#ebeae1] text-[#5b655e]";
   return (
-    <span className="inline-flex h-9 min-w-0 items-center gap-2 rounded-md border border-zinc-200 bg-zinc-50 px-3">
-      <Icon className="size-4 shrink-0 text-zinc-400" aria-hidden />
-      <span className="truncate">{label}</span>
+    <span
+      className={`inline-flex h-6 items-center rounded-full border px-2 text-[11px] font-semibold ${cls}`}
+    >
+      {children}
+    </span>
+  );
+}
+
+function PriorityBadge({
+  priority,
+  children,
+}: {
+  priority: Priority;
+  children: React.ReactNode;
+}) {
+  const cls =
+    priority === "high"
+      ? "border-[#4e6700]/25 bg-[#d6ff2a]/24 text-[#4e6700]"
+      : priority === "low"
+        ? "border-[#c8ccbf] bg-[#ebeae1] text-[#747b70]"
+        : "border-[#c8ccbf] bg-white text-[#5b655e]";
+  return (
+    <span
+      className={`inline-flex h-6 items-center gap-1 rounded-full border px-2 text-[11px] font-semibold ${cls}`}
+    >
+      <Flag className="size-3" aria-hidden />
+      {children}
+    </span>
+  );
+}
+
+function MetaItem({
+  icon: Icon,
+  children,
+}: {
+  icon: LucideIcon;
+  children: React.ReactNode;
+}) {
+  return (
+    <span className="inline-flex min-w-0 items-center gap-2 rounded-xl border border-[#dddfd2] bg-[#f5f4ee] px-3 py-2 text-xs font-semibold text-[#747b70]">
+      <Icon className="size-3.5 shrink-0 text-[#4e6700]" aria-hidden />
+      <span className="truncate">{children}</span>
     </span>
   );
 }
 
 function EmptyState() {
   return (
-    <div className="animate-rise rounded-lg border border-dashed border-zinc-300 bg-white px-6 py-16 text-center shadow-sm">
-      <span className="mx-auto inline-flex size-12 items-center justify-center rounded-md bg-zinc-950 text-[#b6ff4a]">
+    <div className="animate-rise rounded-2xl border border-dashed border-[#b7c0ad] bg-white px-6 py-16 text-center shadow-[inset_5px_5px_14px_rgba(26,28,31,0.06),inset_-5px_-5px_14px_rgba(255,255,255,0.9)]">
+      <span className="mx-auto inline-flex size-12 items-center justify-center rounded-2xl bg-[#d6ff2a] text-[#101600]">
         <ListChecks className="size-6" aria-hidden />
       </span>
-      <h3 className="mt-4 text-base font-semibold text-zinc-950">暂无任务</h3>
-      <p className="mx-auto mt-2 max-w-sm text-sm leading-6 text-zinc-500">
-        新建任务后，这里会显示主任务、生产步骤、负责人和 Notion 状态。
+      <h3 className="mt-4 font-[var(--font-display)] text-base font-semibold">
+        暂无任务
+      </h3>
+      <p className="mx-auto mt-1.5 max-w-xs text-sm text-[#747b70]">
+        点击右上角「新建任务」开始创建。
       </p>
     </div>
   );
 }
 
-function Badge({
-  children,
-  className,
-}: {
-  children: React.ReactNode;
-  className: string;
-}) {
+function FilteredEmptyState() {
   return (
-    <span className={`inline-flex h-7 items-center gap-1 rounded-md border px-2 text-xs font-medium ${className}`}>
-      {children}
-    </span>
+    <div className="animate-rise rounded-2xl border border-dashed border-[#b7c0ad] bg-[#f5f4ee] px-6 py-12 text-center">
+      <span className="mx-auto inline-flex size-12 items-center justify-center rounded-2xl bg-[#f2ffd6] text-[#4e6700]">
+        <Search className="size-6" aria-hidden />
+      </span>
+      <h3 className="mt-4 font-[var(--font-display)] text-base font-semibold">
+        没有匹配的项目
+      </h3>
+      <p className="mx-auto mt-1.5 max-w-sm text-sm leading-6 text-[#747b70]">
+        当前筛选条件下没有结果。可以换关键词、负责人或状态继续查找。
+      </p>
+      <Link
+        href="/"
+        className="mt-5 inline-flex h-10 items-center justify-center gap-2 rounded-full border border-[#b7c0ad] bg-white px-4 text-sm font-bold text-[#3e4942] transition hover:bg-[#f2ffd6]"
+      >
+        <RotateCcw className="size-4" aria-hidden />
+        清空筛选
+      </Link>
+    </div>
   );
 }
 
 function PlatformChecks({ selected }: { selected: string[] }) {
   return (
     <div>
-      <span className="mb-1.5 block text-sm font-medium text-zinc-700">发布平台</span>
+      <span className="mb-1.5 block text-xs font-semibold text-[#747b70]">
+        发布平台
+      </span>
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
         {platformOptions.map((platform) => (
           <label
             key={platform}
-            className="flex h-10 items-center gap-2 rounded-md border border-zinc-200 bg-white px-3 text-sm text-zinc-700 transition hover:border-zinc-400"
+            className="flex h-10 cursor-pointer items-center gap-2 rounded-xl border border-[#c8ccbf] bg-white px-3 text-sm font-semibold text-[#5b655e] transition hover:border-[#4e6700] hover:bg-[#f2ffd6]"
           >
             <input
               name="platforms"
               type="checkbox"
               value={platform}
               defaultChecked={selected.includes(platform)}
-              className="size-4 accent-[#6fd600]"
+              className="size-4 rounded accent-[#d6ff2a]"
             />
-            {platform}
+            {displayPlatform(platform)}
           </label>
         ))}
       </div>
@@ -744,55 +1685,63 @@ function PlatformChecks({ selected }: { selected: string[] }) {
   );
 }
 
-function AssigneeSelect({
+function AssigneeChecks({
   assignees,
   name,
-  defaultValue,
-  showOrigin = false,
+  selected,
 }: {
   assignees: Assignee[];
   name: string;
-  defaultValue?: string;
-  showOrigin?: boolean;
+  selected: string[];
 }) {
   return (
-    <select name={name} defaultValue={defaultValue} className={inputClass}>
+    <div className="grid gap-2 rounded-xl border border-[#c8ccbf] bg-white p-2 shadow-[inset_2px_2px_6px_rgba(26,28,31,0.04)] sm:grid-cols-2">
       {assignees.map((assignee) => (
-        <option key={assignee.id} value={assignee.id}>
-          {assignee.name}
-          {showOrigin && assignee.origin === "workspace_user" ? " · Member" : ""}
-          {showOrigin && assignee.origin === "database_people" ? " · Guest" : ""}
-          {showOrigin && assignee.origin === "manual_guest" ? " · Guest" : ""}
-          {showOrigin && assignee.source === "local" ? " · Local" : ""}
-        </option>
+        <label
+          key={assignee.id}
+          className="flex h-9 min-w-0 cursor-pointer items-center gap-2 rounded-lg px-2 text-xs font-semibold text-[#5b655e] transition hover:bg-[#f2ffd6] hover:text-[#4e6700]"
+        >
+          <input
+            name={name}
+            type="checkbox"
+            value={assignee.id}
+            defaultChecked={selected.includes(assignee.id)}
+            className="size-4 shrink-0 rounded accent-[#d6ff2a]"
+          />
+          <span className="min-w-0 truncate">{assignee.name}</span>
+        </label>
       ))}
-    </select>
+    </div>
   );
 }
 
 function Field({
   label,
   children,
+  className = "",
 }: {
   label: string;
   children: React.ReactNode;
+  className?: string;
 }) {
   return (
-    <label className="block">
-      <span className="mb-1.5 block text-sm font-medium text-zinc-700">{label}</span>
+    <label className={`block min-w-0 ${className}`}>
+      <span className="mb-1.5 block text-xs font-semibold text-[#747b70]">
+        {label}
+      </span>
       {children}
     </label>
   );
 }
 
 const primaryButtonClass =
-  "inline-flex h-10 w-full items-center justify-center gap-2 rounded-md bg-zinc-950 px-4 text-sm font-semibold text-white transition duration-200 hover:-translate-y-0.5 hover:bg-zinc-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#8df000]";
+  "inline-flex h-10 items-center gap-2 rounded-full bg-[#d6ff2a] px-5 text-sm font-bold text-[#101600] shadow-[0_10px_20px_rgba(92,120,0,0.16)] transition hover:bg-[#c6ee18] hover:shadow-[0_12px_24px_rgba(92,120,0,0.2)] active:translate-y-0.5 active:shadow-[0_6px_14px_rgba(92,120,0,0.16)]";
 
 const secondaryButtonClass =
-  "inline-flex h-10 min-w-0 items-center justify-center gap-2 rounded-md border border-zinc-200 px-3 text-sm font-medium text-zinc-700 transition duration-200 hover:border-zinc-950 hover:bg-zinc-950 hover:text-white";
+  "inline-flex h-8 items-center justify-center gap-1.5 rounded-lg border border-[#c8ccbf] bg-white px-2 text-xs font-bold text-[#5b655e] shadow-[inset_0_1px_rgba(255,255,255,0.8)] transition hover:border-[#4e6700] hover:bg-[#f2ffd6] hover:text-[#4e6700] active:translate-y-0.5 xl:size-8 xl:px-0";
 
 const inputClass =
-  "h-10 w-full rounded-md border border-zinc-300 bg-white px-3 text-sm text-zinc-950 outline-none transition placeholder:text-zinc-400 focus:border-zinc-950 focus:ring-2 focus:ring-[#b6ff4a]/60";
+  "h-10 w-full rounded-xl border border-[#c8ccbf] bg-white px-3 text-sm text-[#151a18] shadow-[inset_2px_2px_6px_rgba(26,28,31,0.04),inset_-2px_-2px_6px_rgba(255,255,255,0.75)] outline-none transition placeholder:text-[#87907f] focus:border-[#4e6700] focus:ring-2 focus:ring-[#d6ff2a]/32";
 
 const textareaClass =
-  "min-h-24 w-full resize-y rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm leading-6 text-zinc-950 outline-none transition placeholder:text-zinc-400 focus:border-zinc-950 focus:ring-2 focus:ring-[#b6ff4a]/60";
+  "min-h-24 w-full resize-y rounded-xl border border-[#c8ccbf] bg-white px-3 py-2 text-sm leading-6 text-[#151a18] shadow-[inset_2px_2px_6px_rgba(26,28,31,0.04),inset_-2px_-2px_6px_rgba(255,255,255,0.75)] outline-none transition placeholder:text-[#87907f] focus:border-[#4e6700] focus:ring-2 focus:ring-[#d6ff2a]/32";

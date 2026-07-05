@@ -35,7 +35,9 @@ export function StatusBanner({ className, text }: StatusBannerProps) {
   }, []);
 
   return (
-    <div className={`animate-pop rounded-lg border px-4 py-3 text-sm font-medium shadow-sm ${className}`}>
+    <div
+      className={`animate-pop rounded-xl border px-4 py-3 text-[13px] font-medium ${className}`}
+    >
       {text}
     </div>
   );
