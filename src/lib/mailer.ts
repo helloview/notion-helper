@@ -14,36 +14,49 @@ export async function sendEmail({ to, subject, text, html }: SendEmailOptions) {
   // 1. Try to send via SMTP (e.g., local mock SMTP or Gmail)
   let sentViaSmtp = false;
   
-  // Use environment SMTP configuration if present (e.g., Gmail SMTP)
-  const host = process.env.SMTP_HOST || "127.0.0.1";
+  const host = process.env.SMTP_HOST;
   const port = parseInt(process.env.SMTP_PORT || "1025", 10);
   const secure = process.env.SMTP_SECURE === "true";
   const user = process.env.SMTP_USER;
   const pass = process.env.SMTP_PASS;
 
-  try {
-    const transportConfig: any = {
-      host,
-      port,
-      secure,
-    };
+  const isProduction = process.env.NODE_ENV === "production" || !!process.env.VERCEL;
 
-    if (user && pass) {
-      transportConfig.auth = { user, pass };
+  // Only attempt SMTP connection if host is explicitly configured, or if we are in local development fallback
+  const shouldAttemptSmtp = !!host || !isProduction;
+
+  if (shouldAttemptSmtp) {
+    const targetHost = host || "127.0.0.1";
+    try {
+      const transportConfig: any = {
+        host: targetHost,
+        port,
+        secure,
+        // Set connection timeouts to prevent Vercel function timeout
+        connectionTimeout: 3000, 
+        greetingTimeout: 3000,
+        socketTimeout: 3000,
+      };
+
+      if (user && pass) {
+        transportConfig.auth = { user, pass };
+      }
+
+      const transporter = nodemailer.createTransport(transportConfig);
+      await transporter.sendMail({
+        from: fromEmail,
+        to,
+        subject,
+        text,
+        html: html || text,
+      });
+      sentViaSmtp = true;
+      console.log(`[Mailer] Email sent successfully via SMTP to ${to} (${targetHost})`);
+    } catch (err: any) {
+      console.warn(`[Mailer] SMTP delivery failed to ${to} (Host: ${targetHost}:${port}):`, err.message);
     }
-
-    const transporter = nodemailer.createTransport(transportConfig);
-    await transporter.sendMail({
-      from: fromEmail,
-      to,
-      subject,
-      text,
-      html: html || text,
-    });
-    sentViaSmtp = true;
-    console.log(`[Mailer] Email sent successfully via SMTP to ${to}`);
-  } catch (err: any) {
-    console.warn(`[Mailer] SMTP delivery failed to ${to} (Host: ${host}:${port}):`, err.message);
+  } else {
+    console.log(`[Mailer] No SMTP_HOST configured in production/Vercel. Bypassing SMTP mail transport to prevent timeouts.`);
   }
 
   // 2. Save email in MongoDB collections 'emails' and 'sent_emails' 
