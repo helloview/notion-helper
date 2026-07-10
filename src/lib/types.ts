@@ -30,6 +30,9 @@ export type AudioSegment = {
     state?: NotionPublishState;
     error?: string;
   };
+  shotTechnique?: string;
+  shotDescription?: string;
+  shotImagePath?: string;
   createdAt: string;
   updatedAt: string;
 };
@@ -38,6 +41,7 @@ export type Assignee = {
   id: string;
   name: string;
   role: string;
+  email?: string;
   notionUserId?: string;
   avatarUrl?: string;
   source: "notion" | "local";
@@ -132,4 +136,5 @@ export type UpdateStepInput = {
   assigneeId?: string;
   assigneeIds?: string[];
   dueDate?: string;
+  audioSegments?: AudioSegment[];
 };

@@ -32,7 +32,7 @@ export default function RootLayout({
       lang="zh-CN"
       className={`${plusJakarta.variable} ${inter.variable} ${jetBrainsMono.variable} h-full antialiased`}
     >
-      <body className="flex min-h-full flex-col bg-[#f5f4ee] text-[#151a18]">
+      <body className="flex min-h-full flex-col bg-[#fbfcff] text-[#111827]">
         {children}
       </body>
     </html>

@@ -219,6 +219,7 @@ function toAssignee(
     id: user.id,
     name: user.name ?? "Unnamed Notion user",
     role: origin === "workspace_user" ? "Workspace member" : "Guest",
+    email: (user as any).person?.email ?? `${(user.name ?? "user").toLowerCase().replace(/\s+/g, "")}@company.com`,
     notionUserId: user.id,
     avatarUrl: user.avatar_url ?? undefined,
     source: "notion",
@@ -636,6 +637,62 @@ async function replaceStepPageContent({
           rich_text: richText(`归属大任务：${parentTitle}`).rich_text,
         },
       },
+      // Add custom Storyboard Segment scripting inside Notion page if present
+      ...(step.audioSegments && step.audioSegments.length > 0
+        ? [
+            {
+              object: "block" as const,
+              type: "heading_2" as const,
+              heading_2: {
+                rich_text: richText("🎬 分镜画面设计脚本").rich_text,
+              },
+            },
+            ...step.audioSegments.flatMap((seg, idx) => {
+              const blocks: any[] = [];
+              const techniqueLabel = seg.shotTechnique ? `【${seg.shotTechnique}】` : "【未规划运镜】";
+              blocks.push({
+                object: "block",
+                type: "heading_3",
+                heading_3: {
+                  rich_text: richText(`🎬 分段 ${idx + 1} ${techniqueLabel}`).rich_text,
+                },
+              });
+              blocks.push({
+                object: "block",
+                type: "paragraph",
+                paragraph: {
+                  rich_text: [
+                    {
+                      text: { content: "文案：" },
+                      annotations: { bold: true, color: "gray" },
+                    },
+                    {
+                      text: { content: seg.text },
+                    },
+                  ],
+                },
+              });
+              if (seg.shotDescription) {
+                blocks.push({
+                  object: "block",
+                  type: "paragraph",
+                  paragraph: {
+                    rich_text: [
+                      {
+                        text: { content: "画面设计：" },
+                        annotations: { bold: true, color: "blue" },
+                      },
+                      {
+                        text: { content: seg.shotDescription },
+                      },
+                    ],
+                  },
+                });
+              }
+              return blocks;
+            })
+          ]
+        : [])
     ],
   });
 }

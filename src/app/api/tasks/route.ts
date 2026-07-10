@@ -132,6 +132,7 @@ export async function PATCH(request: Request) {
         assigneeId,
         assigneeIds,
         dueDate: body.dueDate ? String(body.dueDate) : "",
+        audioSegments: Array.isArray(body.audioSegments) ? body.audioSegments : undefined,
       },
     );
 

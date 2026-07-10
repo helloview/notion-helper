@@ -50,7 +50,7 @@ export function PendingFormStatus({
 
   return (
     <div
-      className={`relative overflow-hidden rounded-full border border-[#d6ff2a]/35 bg-[#d6ff2a]/12 px-3 py-2 text-xs font-semibold text-[#4e6700] ${className}`}
+      className={`relative overflow-hidden rounded-full border border-[#3b82f6]/35 bg-[#3b82f6]/12 px-3 py-2 text-xs font-semibold text-[#2563eb] ${className}`}
       role="status"
       aria-live="polite"
     >
@@ -58,7 +58,7 @@ export function PendingFormStatus({
         <LoaderCircle className="size-3.5 animate-spin" aria-hidden />
         {text}
       </span>
-      <span className="absolute inset-y-0 left-0 w-1/2 animate-[loadingSweep_1.2s_ease-in-out_infinite] bg-[#d6ff2a]/35" />
+      <span className="absolute inset-y-0 left-0 w-1/2 animate-[loadingSweep_1.2s_ease-in-out_infinite] bg-[#3b82f6]/35" />
     </div>
   );
 }

@@ -35,13 +35,13 @@ export function DeleteTaskForm({
         pendingText="正在删除"
         title={
           hasNotionPage
-            ? "删除本地任务并将协作页面移到回收站"
+            ? "删除数据库任务并将协作页面移到回收站"
             : "删除本地任务"
         }
-        className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg border border-[#ffd0cb] bg-white px-2 text-xs font-bold text-[#ba1a1a] shadow-[inset_0_1px_rgba(255,255,255,0.8)] transition hover:border-[#ba1a1a]/45 hover:bg-[#ffdad6] active:translate-y-0.5 xl:size-8 xl:px-0"
+        className="inline-flex h-10 items-center justify-center gap-1.5 rounded-2xl border border-[#fecaca] bg-white px-3 text-sm font-bold text-[#ef4444] transition hover:border-[#ef4444]/50 hover:bg-[#fef2f2] active:translate-y-0.5 lg:size-10 lg:px-0"
       >
         <Trash2 className="size-3.5" aria-hidden />
-        <span className="xl:sr-only">删除</span>
+        <span className="lg:sr-only">删除</span>
       </PendingSubmitButton>
     </form>
   );
