@@ -44,6 +44,7 @@ type NotionUserLike = {
 type DataSourceSchema = {
   dataSourceId: string;
   properties: Record<string, { type: string; options?: string[] }>;
+  isStandardDatabase?: boolean;
 };
 
 type NotionTaskType = "main" | "subtask";
@@ -242,32 +243,57 @@ async function getDataSourceSchema(
   const dataSourceId =
     "data_sources" in database ? database.data_sources[0]?.id : undefined;
 
-  if (!dataSourceId) return null;
+  if (dataSourceId) {
+    const dataSource = await notion.dataSources.retrieve({
+      data_source_id: dataSourceId,
+    });
 
-  const dataSource = await notion.dataSources.retrieve({
-    data_source_id: dataSourceId,
-  });
+    return {
+      dataSourceId,
+      properties:
+        "properties" in dataSource
+          ? Object.fromEntries(
+              Object.entries(dataSource.properties).map(([name, property]) => [
+                name,
+                {
+                  type: property.type,
+                  options:
+                    property.type === "status"
+                      ? property.status.options.map((option) => option.name)
+                      : property.type === "select"
+                        ? property.select.options.map((option) => option.name)
+                      : undefined,
+                },
+              ]),
+            )
+          : {},
+    };
+  }
 
-  return {
-    dataSourceId,
-    properties:
-      "properties" in dataSource
-        ? Object.fromEntries(
-            Object.entries(dataSource.properties).map(([name, property]) => [
-              name,
-              {
-                type: property.type,
-                options:
-                  property.type === "status"
-                    ? property.status.options.map((option) => option.name)
-                    : property.type === "select"
-                      ? property.select.options.map((option) => option.name)
-                    : undefined,
-              },
-            ]),
-          )
-        : {},
-  };
+  // Fallback: Standard Notion Database
+  if ("properties" in database) {
+    const dbProperties = (database as any).properties;
+    return {
+      dataSourceId: databaseId,
+      isStandardDatabase: true,
+      properties: Object.fromEntries(
+        Object.entries(dbProperties).map(([name, property]: [string, any]) => [
+          name,
+          {
+            type: property.type,
+            options:
+              property.type === "status"
+                ? property.status.options.map((option: any) => option.name)
+                : property.type === "select"
+                  ? property.select.options.map((option: any) => option.name)
+                : undefined,
+          },
+        ]),
+      ),
+    };
+  }
+
+  return null;
 }
 
 function findProperty(
@@ -468,9 +494,9 @@ async function createStepPagesForTask({
     }
 
     const stepPage = await notion.pages.create({
-      parent: {
-        data_source_id: schema.dataSourceId,
-      },
+      parent: schema.isStandardDatabase
+        ? { database_id: schema.dataSourceId }
+        : { data_source_id: schema.dataSourceId },
       properties: stepProperties,
       children: [
         {
@@ -555,9 +581,8 @@ async function archiveManagedStepBlocks(notion: Client, pageId: string) {
         listText.startsWith("截止日期：");
 
       if (shouldArchive) {
-        await notion.blocks.update({
+        await notion.blocks.delete({
           block_id: block.id,
-          in_trash: true,
         });
       }
     }
@@ -729,9 +754,8 @@ async function archiveManagedSegmentWorkflowBlocks(notion: Client, pageId: strin
         text.startsWith("为本段收集");
 
       if (shouldArchive) {
-        await notion.blocks.update({
+        await notion.blocks.delete({
           block_id: block.id,
-          in_trash: true,
         });
       }
     }
@@ -792,9 +816,8 @@ async function archiveBootstrapStepBlocks(notion: Client, pageId: string) {
       const text = blockText(block);
 
       if (isManagedStepText(text)) {
-        await notion.blocks.update({
+        await notion.blocks.delete({
           block_id: block.id,
-          in_trash: true,
         });
       }
     }
@@ -1025,9 +1048,8 @@ async function archiveManagedParentTaskBlocks(
         isManagedIntro ||
         isManagedStepLink
       ) {
-        await notion.blocks.update({
+        await notion.blocks.delete({
           block_id: block.id,
-          in_trash: true,
         });
       }
     }
@@ -1432,9 +1454,9 @@ export async function publishTaskToNotion(task: Task): Promise<PublishResult> {
 
   try {
     const page = await notion.pages.create({
-      parent: {
-        data_source_id: schema.dataSourceId,
-      },
+      parent: schema.isStandardDatabase
+        ? { database_id: schema.dataSourceId }
+        : { data_source_id: schema.dataSourceId },
       properties: parentProperties,
       children: [
         {
@@ -1570,7 +1592,7 @@ export async function deleteTaskFromNotion(pageId?: string): Promise<DeleteResul
   try {
     await notion.pages.update({
       page_id: pageId,
-      in_trash: true,
+      archived: true,
     });
 
     return { state: "deleted" };
