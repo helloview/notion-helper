@@ -109,47 +109,63 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
-  const body = (await request.json()) as Record<string, unknown>;
+  try {
+    const body = (await request.json()) as Record<string, unknown>;
 
-  if (typeof body.verification_token === "string") {
-    await saveVerificationToken(body.verification_token);
+    if (typeof body.verification_token === "string") {
+      await saveVerificationToken(body.verification_token);
+
+      return NextResponse.json({
+        ok: true,
+        verification_token: body.verification_token,
+      });
+    }
+
+    const pageIds = [...collectPageIds(body)];
+
+    if (pageIds.length === 0 && typeof body.pageId === "string") {
+      pageIds.push(body.pageId);
+    }
+
+    if (pageIds.length === 0) {
+      return NextResponse.json({
+        ok: true,
+        state: "ignored",
+        reason: "No page id found in webhook payload.",
+      });
+    }
+
+    const eventId = eventIdFromPayload(body);
+    const results = [];
+
+    for (const pageId of pageIds) {
+      const scopedEventId = eventId ? `${eventId}:${pageId}` : undefined;
+
+      results.push({
+        pageId,
+        result: await processNotionConfirmedScriptPage(pageId, scopedEventId),
+      });
+    }
+
+    revalidatePath("/");
 
     return NextResponse.json({
       ok: true,
-      verification_token: body.verification_token,
+      results,
     });
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "Unknown webhook error";
+
+    console.error("[api/notion/webhook:POST]", message);
+
+    return NextResponse.json(
+      {
+        ok: false,
+        error: "Webhook processing failed",
+        detail: message,
+      },
+      { status: 500 },
+    );
   }
-
-  const pageIds = [...collectPageIds(body)];
-
-  if (pageIds.length === 0 && typeof body.pageId === "string") {
-    pageIds.push(body.pageId);
-  }
-
-  if (pageIds.length === 0) {
-    return NextResponse.json({
-      ok: true,
-      state: "ignored",
-      reason: "No page id found in webhook payload.",
-    });
-  }
-
-  const eventId = eventIdFromPayload(body);
-  const results = [];
-
-  for (const pageId of pageIds) {
-    const scopedEventId = eventId ? `${eventId}:${pageId}` : undefined;
-
-    results.push({
-      pageId,
-      result: await processNotionConfirmedScriptPage(pageId, scopedEventId),
-    });
-  }
-
-  revalidatePath("/");
-
-  return NextResponse.json({
-    ok: true,
-    results,
-  });
 }

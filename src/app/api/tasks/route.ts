@@ -26,78 +26,105 @@ const stepStatuses = new Set<StepStatus>([
   "done",
 ]);
 
+function apiError(scope: string, error: unknown, status = 500) {
+  const message = error instanceof Error ? error.message : "Unknown API error";
+
+  console.error(`[api/tasks:${scope}]`, message);
+
+  return NextResponse.json(
+    {
+      error: "Task operation failed",
+      detail: message,
+    },
+    { status },
+  );
+}
+
 export async function GET() {
-  return NextResponse.json({ tasks: await getTasks() });
+  try {
+    return NextResponse.json({ tasks: await getTasks() });
+  } catch (error) {
+    return apiError("GET", error);
+  }
 }
 
 export async function POST(request: Request) {
-  const body = await request.json();
-  const title = String(body.title ?? "").trim();
-  const summary = String(body.summary ?? "").trim();
-  const priority = String(body.priority ?? "medium");
-  const kind = String(body.kind ?? "video");
-  const steps = Array.isArray(body.steps) ? body.steps.map(String) : [];
+  try {
+    const body = await request.json();
+    const title = String(body.title ?? "").trim();
+    const summary = String(body.summary ?? "").trim();
+    const priority = String(body.priority ?? "medium");
+    const kind = String(body.kind ?? "video");
+    const steps = Array.isArray(body.steps) ? body.steps.map(String) : [];
 
-  if (!title || !summary) {
-    return NextResponse.json(
-      { error: "title and summary are required" },
-      { status: 400 },
-    );
+    if (!title || !summary) {
+      return NextResponse.json(
+        { error: "title and summary are required" },
+        { status: 400 },
+      );
+    }
+
+    const resolvedKind = taskKinds.has(kind as TaskKind) ? (kind as TaskKind) : "video";
+
+    const task = await createTask({
+      kind: resolvedKind,
+      title,
+      summary,
+      priority: priorities.has(priority as Priority) ? (priority as Priority) : "medium",
+      assigneeId: String(body.assigneeId ?? defaultAssigneeId),
+      assigneeIds: Array.isArray(body.assigneeIds)
+        ? body.assigneeIds.map(String)
+        : undefined,
+      stepAssigneeId: body.stepAssigneeId ? String(body.stepAssigneeId) : undefined,
+      stepAssigneeIds: Array.isArray(body.stepAssigneeIds)
+        ? body.stepAssigneeIds.map(String)
+        : undefined,
+      dueDate: body.dueDate ? String(body.dueDate) : "",
+      contentSeries: body.contentSeries ? String(body.contentSeries) : "",
+      weekLabel: body.weekLabel ? String(body.weekLabel) : "",
+      platforms: Array.isArray(body.platforms) ? body.platforms.map(String) : [],
+      targetPublishDate: body.targetPublishDate ? String(body.targetPublishDate) : "",
+      steps: steps.length > 0 ? steps : defaultStepsForKind(resolvedKind),
+    });
+
+    return NextResponse.json({ task }, { status: 201 });
+  } catch (error) {
+    return apiError("POST", error);
   }
-
-  const resolvedKind = taskKinds.has(kind as TaskKind) ? (kind as TaskKind) : "video";
-
-  const task = await createTask({
-    kind: resolvedKind,
-    title,
-    summary,
-    priority: priorities.has(priority as Priority) ? (priority as Priority) : "medium",
-    assigneeId: String(body.assigneeId ?? defaultAssigneeId),
-    assigneeIds: Array.isArray(body.assigneeIds)
-      ? body.assigneeIds.map(String)
-      : undefined,
-    stepAssigneeId: body.stepAssigneeId ? String(body.stepAssigneeId) : undefined,
-    stepAssigneeIds: Array.isArray(body.stepAssigneeIds)
-      ? body.stepAssigneeIds.map(String)
-      : undefined,
-    dueDate: body.dueDate ? String(body.dueDate) : "",
-    contentSeries: body.contentSeries ? String(body.contentSeries) : "",
-    weekLabel: body.weekLabel ? String(body.weekLabel) : "",
-    platforms: Array.isArray(body.platforms) ? body.platforms.map(String) : [],
-    targetPublishDate: body.targetPublishDate ? String(body.targetPublishDate) : "",
-    steps: steps.length > 0 ? steps : defaultStepsForKind(resolvedKind),
-  });
-
-  return NextResponse.json({ task }, { status: 201 });
 }
 
 export async function DELETE(request: Request) {
-  const { searchParams } = new URL(request.url);
-  const taskId = searchParams.get("id");
+  try {
+    const { searchParams } = new URL(request.url);
+    const taskId = searchParams.get("id");
 
-  if (!taskId) {
-    return NextResponse.json({ error: "id is required" }, { status: 400 });
+    if (!taskId) {
+      return NextResponse.json({ error: "id is required" }, { status: 400 });
+    }
+
+    const result = await deleteTask(taskId);
+
+    if (result.state === "not_found") {
+      return NextResponse.json({ error: "task not found" }, { status: 404 });
+    }
+
+    return NextResponse.json(result);
+  } catch (error) {
+    return apiError("DELETE", error);
   }
-
-  const result = await deleteTask(taskId);
-
-  if (result.state === "not_found") {
-    return NextResponse.json({ error: "task not found" }, { status: 404 });
-  }
-
-  return NextResponse.json(result);
 }
 
 export async function PATCH(request: Request) {
-  const body = await request.json();
-  const taskId = String(body.id ?? "");
-  const status = String(body.status ?? "");
-  const action = body.action ? String(body.action) : "";
-  const stepId = body.stepId ? String(body.stepId) : "";
-  const assigneeId = body.assigneeId ? String(body.assigneeId) : "";
-  const assigneeIds = Array.isArray(body.assigneeIds)
-    ? body.assigneeIds.map(String)
-    : undefined;
+  try {
+    const body = await request.json();
+    const taskId = String(body.id ?? "");
+    const status = String(body.status ?? "");
+    const action = body.action ? String(body.action) : "";
+    const stepId = body.stepId ? String(body.stepId) : "";
+    const assigneeId = body.assigneeId ? String(body.assigneeId) : "";
+    const assigneeIds = Array.isArray(body.assigneeIds)
+      ? body.assigneeIds.map(String)
+      : undefined;
 
   if (action === "publishSteps") {
     if (!taskId) {
@@ -192,12 +219,8 @@ export async function PATCH(request: Request) {
     return NextResponse.json({ error: "task not found" }, { status: 404 });
   }
 
-  if (result.state === "failed") {
-    return NextResponse.json(
-      { error: result.error, state: result.state },
-      { status: 502 },
-    );
-  }
-
   return NextResponse.json(result);
+  } catch (error) {
+    return apiError("PATCH", error);
+  }
 }

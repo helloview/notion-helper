@@ -303,6 +303,7 @@ function buildSteps(
 
 export async function createTask(input: CreateTaskInput) {
   const now = new Date().toISOString();
+  const collection = await getTasksCollection();
   const assignees = await getAvailableAssignees();
   const assigneeIds = resolveAssigneeIds(
     assignees,
@@ -341,14 +342,28 @@ export async function createTask(input: CreateTaskInput) {
     updatedAt: now,
   };
 
-  const publishResult = await publishTaskToNotion(task);
-  task.notion =
+  await collection.insertOne(task);
+
+  let publishResult: Awaited<ReturnType<typeof publishTaskToNotion>>;
+
+  try {
+    publishResult = await publishTaskToNotion(task);
+  } catch (error) {
+    publishResult = {
+      state: "failed",
+      error: error instanceof Error ? error.message : "Unknown Notion error",
+    };
+  }
+
+  const syncedTask: Task = {
+    ...task,
+    notion:
     publishResult.state === "published"
       ? { state: "published", pageId: publishResult.pageId }
       : publishResult.state === "failed"
         ? { state: "failed", error: publishResult.error }
-        : { state: "not_configured" };
-  task.steps =
+        : { state: "not_configured" },
+    steps:
     publishResult.state === "published"
       ? task.steps.map((step) => ({
           ...step,
@@ -357,12 +372,13 @@ export async function createTask(input: CreateTaskInput) {
             pageId: publishResult.stepPageIds[step.id],
           },
         }))
-      : task.steps;
+      : task.steps,
+    updatedAt: new Date().toISOString(),
+  };
 
-  const collection = await getTasksCollection();
-  await collection.insertOne(task);
+  await collection.replaceOne({ id: task.id }, syncedTask);
 
-  return task;
+  return syncedTask;
 }
 
 export async function updateTaskStatus(taskId: string, status: TaskStatus) {
@@ -373,24 +389,22 @@ export async function updateTaskStatus(taskId: string, status: TaskStatus) {
     return { state: "not_found" as const };
   }
 
+  const updatedTask: Task = {
+    ...task,
+    status,
+    updatedAt: new Date().toISOString(),
+  };
+
+  await collection.replaceOne({ id: taskId }, updatedTask);
+
   const remoteUpdateResult = await updateTaskStatusInNotion(
     task.notion.pageId,
     status,
   );
 
   if (remoteUpdateResult.state === "failed") {
-    return remoteUpdateResult;
+    return { state: "updated_local_remote_failed" as const };
   }
-
-  await collection.updateOne(
-    { id: taskId },
-    {
-      $set: {
-        status,
-        updatedAt: new Date().toISOString(),
-      },
-    },
-  );
 
   return {
     state:
@@ -604,7 +618,13 @@ export async function setStepCompleted(
   const collection = await getTasksCollection();
   const task = await findTaskById(collection, taskId);
 
-  if (!task) return;
+  if (!task) return { state: "not_found" as const };
+
+  const targetStep = task.steps.find((step) => step.id === stepId);
+
+  if (!targetStep) return { state: "not_found" as const };
+
+  const nextStatus: StepStatus = completed ? "done" : "todo";
 
   const updatedTask: Task = {
     ...task,
@@ -613,7 +633,7 @@ export async function setStepCompleted(
         ? {
             ...step,
             completed,
-            status: completed ? "done" : "todo",
+            status: nextStatus,
           }
         : step,
     ),
@@ -621,6 +641,24 @@ export async function setStepCompleted(
   };
 
   await collection.replaceOne({ id: taskId }, updatedTask);
+
+  const remoteUpdateResult = await updateStepStatusInNotion(
+    targetStep.notion?.pageId,
+    nextStatus,
+  );
+
+  if (remoteUpdateResult.state !== "failed") {
+    await syncParentTaskIndexToNotion(updatedTask);
+  }
+
+  return {
+    state:
+      remoteUpdateResult.state === "updated"
+        ? ("updated_remote_and_local" as const)
+        : remoteUpdateResult.state === "failed"
+          ? ("updated_local_remote_failed" as const)
+        : ("updated_local" as const),
+  };
 }
 
 export async function generateAudioSegmentsFromScriptStep({

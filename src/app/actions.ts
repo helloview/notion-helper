@@ -26,6 +26,23 @@ const stepStatuses = new Set<StepStatus>([
 ]);
 const taskKinds = new Set<TaskKind>(["general", "video"]);
 
+function actionError(action: string, error: unknown) {
+  console.error(
+    `[${action}]`,
+    error instanceof Error ? error.message : "Unknown server action error",
+  );
+}
+
+function mutationUrl(taskId: string, key: string, state: string) {
+  const params = new URLSearchParams({ [key]: state });
+
+  if (taskId) {
+    params.set("project", taskId);
+  }
+
+  return `/?${params.toString()}`;
+}
+
 export async function publishTaskAction(formData: FormData) {
   const kindValue = String(formData.get("kind") ?? "video");
   const kind = taskKinds.has(kindValue as TaskKind)
@@ -50,49 +67,56 @@ export async function publishTaskAction(formData: FormData) {
     .split("\n")
     .map((step) => step.trim())
     .filter(Boolean);
+  let targetUrl = "/?error=failed";
 
   if (!title || !summary) {
     redirect("/?error=missing-fields");
   }
 
-  const assignees = await getAvailableAssignees();
-  const knownAssigneeIds = new Set(assignees.map((assignee) => assignee.id));
-  const resolvedAssigneeIds = assigneeIds.filter((id) =>
-    knownAssigneeIds.has(id),
-  );
-  const resolvedStepAssigneeIds = stepAssigneeIds.filter((id) =>
-    knownAssigneeIds.has(id),
-  );
-  const resolvedAssigneeId = knownAssigneeIds.has(assigneeId)
-    ? assigneeId
-    : resolvedAssigneeIds[0];
-  const resolvedStepAssigneeId = knownAssigneeIds.has(stepAssigneeId)
-    ? stepAssigneeId
-    : resolvedStepAssigneeIds[0] ?? resolvedAssigneeId;
+  try {
+    const assignees = await getAvailableAssignees();
+    const knownAssigneeIds = new Set(assignees.map((assignee) => assignee.id));
+    const resolvedAssigneeIds = assigneeIds.filter((id) =>
+      knownAssigneeIds.has(id),
+    );
+    const resolvedStepAssigneeIds = stepAssigneeIds.filter((id) =>
+      knownAssigneeIds.has(id),
+    );
+    const resolvedAssigneeId = knownAssigneeIds.has(assigneeId)
+      ? assigneeId
+      : resolvedAssigneeIds[0];
+    const resolvedStepAssigneeId = knownAssigneeIds.has(stepAssigneeId)
+      ? stepAssigneeId
+      : resolvedStepAssigneeIds[0] ?? resolvedAssigneeId;
 
-  const task = await createTask({
-    kind,
-    title,
-    summary,
-    priority: priorities.has(priorityValue as Priority)
-      ? (priorityValue as Priority)
-      : "medium",
-    assigneeId: resolvedAssigneeId,
-    assigneeIds: resolvedAssigneeIds,
-    dueDate,
-    contentSeries,
-    weekLabel,
-    platforms,
-    targetPublishDate,
-    stepAssigneeId: resolvedStepAssigneeId,
-    stepAssigneeIds: resolvedStepAssigneeIds,
-    steps: steps.length > 0 ? steps : defaultStepsForKind(kind),
-  });
+    const task = await createTask({
+      kind,
+      title,
+      summary,
+      priority: priorities.has(priorityValue as Priority)
+        ? (priorityValue as Priority)
+        : "medium",
+      assigneeId: resolvedAssigneeId,
+      assigneeIds: resolvedAssigneeIds,
+      dueDate,
+      contentSeries,
+      weekLabel,
+      platforms,
+      targetPublishDate,
+      stepAssigneeId: resolvedStepAssigneeId,
+      stepAssigneeIds: resolvedStepAssigneeIds,
+      steps: steps.length > 0 ? steps : defaultStepsForKind(kind),
+    });
 
-  revalidatePath("/");
-  redirect(
-    `/?created=${task.notion.state === "published" ? "notion" : "local"}&notion=${task.notion.state}`,
-  );
+    revalidatePath("/");
+    const createdState = task.notion.state === "published" ? "notion" : "local";
+    targetUrl = `/?project=${encodeURIComponent(task.id)}&created=${createdState}&notion=${encodeURIComponent(task.notion.state)}`;
+  } catch (error) {
+    actionError("publishTaskAction", error);
+    targetUrl = "/?error=publish-failed";
+  }
+
+  redirect(targetUrl);
 }
 
 export async function toggleStepAction(formData: FormData) {
@@ -101,7 +125,11 @@ export async function toggleStepAction(formData: FormData) {
   const completed = String(formData.get("completed") ?? "") === "true";
 
   if (taskId && stepId) {
-    await setStepCompleted(taskId, stepId, completed);
+    try {
+      await setStepCompleted(taskId, stepId, completed);
+    } catch (error) {
+      actionError("toggleStepAction", error);
+    }
   }
 
   revalidatePath("/");
@@ -110,14 +138,21 @@ export async function toggleStepAction(formData: FormData) {
 export async function updateStatusAction(formData: FormData) {
   const taskId = String(formData.get("taskId") ?? "");
   const statusValue = String(formData.get("status") ?? "active");
+  let targetUrl = mutationUrl(taskId, "update", "invalid");
 
   if (taskId && statuses.has(statusValue as TaskStatus)) {
-    const result = await updateTaskStatus(taskId, statusValue as TaskStatus);
-    revalidatePath("/");
-    redirect(`/?update=${result.state}`);
+    try {
+      const result = await updateTaskStatus(taskId, statusValue as TaskStatus);
+      revalidatePath("/");
+      targetUrl = mutationUrl(taskId, "update", result.state);
+    } catch (error) {
+      actionError("updateStatusAction", error);
+      targetUrl = mutationUrl(taskId, "update", "failed");
+    }
   }
 
   revalidatePath("/");
+  redirect(targetUrl);
 }
 
 export async function updateTaskDetailsAction(formData: FormData) {
@@ -138,26 +173,34 @@ export async function updateTaskDetailsAction(formData: FormData) {
     redirect("/?update=invalid");
   }
 
-  const result = await updateTaskDetails(taskId, {
-    title,
-    summary,
-    status: statuses.has(statusValue as TaskStatus)
-      ? (statusValue as TaskStatus)
-      : "active",
-    priority: priorities.has(priorityValue as Priority)
-      ? (priorityValue as Priority)
-      : "medium",
-    assigneeId,
-    assigneeIds,
-    dueDate,
-    contentSeries,
-    weekLabel,
-    platforms,
-    targetPublishDate,
-  });
+  let targetUrl = mutationUrl(taskId, "update", "failed");
+
+  try {
+    const result = await updateTaskDetails(taskId, {
+      title,
+      summary,
+      status: statuses.has(statusValue as TaskStatus)
+        ? (statusValue as TaskStatus)
+        : "active",
+      priority: priorities.has(priorityValue as Priority)
+        ? (priorityValue as Priority)
+        : "medium",
+      assigneeId,
+      assigneeIds,
+      dueDate,
+      contentSeries,
+      weekLabel,
+      platforms,
+      targetPublishDate,
+    });
+
+    targetUrl = mutationUrl(taskId, "update", result.state);
+  } catch (error) {
+    actionError("updateTaskDetailsAction", error);
+  }
 
   revalidatePath("/");
-  redirect(`/?update=${result.state}`);
+  redirect(targetUrl);
 }
 
 export async function updateStepAction(formData: FormData) {
@@ -170,6 +213,7 @@ export async function updateStepAction(formData: FormData) {
   const assigneeId = String(formData.get("assigneeId") ?? "");
   const assigneeIds = formData.getAll("assigneeIds").map(String).filter(Boolean);
   const dueDate = String(formData.get("dueDate") ?? "").trim();
+  let targetUrl = mutationUrl(taskId, "stepUpdate", "invalid");
 
   if (
     taskId &&
@@ -177,24 +221,29 @@ export async function updateStepAction(formData: FormData) {
     title &&
     stepStatuses.has(statusValue as StepStatus)
   ) {
-    const result = await updateStep(
-      taskId,
-      stepId,
-      {
-        title,
-        phase,
-        description,
-        status: statusValue as StepStatus,
-        assigneeId,
-        assigneeIds,
-        dueDate,
-      },
-    );
-    revalidatePath("/");
-    redirect(`/?stepUpdate=${result.state}`);
+    try {
+      const result = await updateStep(
+        taskId,
+        stepId,
+        {
+          title,
+          phase,
+          description,
+          status: statusValue as StepStatus,
+          assigneeId,
+          assigneeIds,
+          dueDate,
+        },
+      );
+      targetUrl = mutationUrl(taskId, "stepUpdate", result.state);
+    } catch (error) {
+      actionError("updateStepAction", error);
+      targetUrl = mutationUrl(taskId, "stepUpdate", "failed");
+    }
   }
 
   revalidatePath("/");
+  redirect(targetUrl);
 }
 
 export async function deleteTaskAction(formData: FormData) {
@@ -204,8 +253,15 @@ export async function deleteTaskAction(formData: FormData) {
     redirect("/?delete=missing-id");
   }
 
-  const result = await deleteTask(taskId);
+  let targetUrl = "/?delete=failed";
+
+  try {
+    const result = await deleteTask(taskId);
+    targetUrl = `/?delete=${encodeURIComponent(result.state)}`;
+  } catch (error) {
+    actionError("deleteTaskAction", error);
+  }
 
   revalidatePath("/");
-  redirect(`/?delete=${result.state}`);
+  redirect(targetUrl);
 }

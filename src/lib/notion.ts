@@ -1411,48 +1411,48 @@ export async function publishTaskToNotion(task: Task): Promise<PublishResult> {
     return { state: "not_configured" };
   }
 
-  const assignees = await getAvailableAssignees();
-  const taskAssignees = resolveNotionAssignees(
-    assignees,
-    task.assigneeIds,
-    task.assigneeId,
-  );
-  const schema = await getDataSourceSchema(notion, databaseId);
-
-  if (!schema) {
-    return {
-      state: "failed",
-      error: "No data source found for the configured Notion database.",
-    };
-  }
-
-  const notionDueDate = task.dueDate || task.targetPublishDate;
-  const parentProperties = buildPageProperties({
-    schema,
-    title: taskDisplayTitle(task),
-    status: task.status,
-    assignees: taskAssignees,
-    dueDate: notionDueDate,
-    taskType: "main",
-  });
-
-  if (!parentProperties) {
-    return {
-      state: "failed",
-      error: "No title property found in the configured Notion database.",
-    };
-  }
-
-  const metadataLines = [
-    task.projectCode ? `项目编号：[${task.projectCode}]` : "",
-    task.kind === "video" ? "类型：视频项目" : "类型：普通任务",
-    task.contentSeries ? `系列：${task.contentSeries}` : "",
-    task.weekLabel ? `周期：${task.weekLabel}` : "",
-    task.targetPublishDate ? `目标发布：${task.targetPublishDate}` : "",
-    task.platforms?.length ? `平台：${task.platforms.join(" / ")}` : "",
-  ].filter(Boolean);
-
   try {
+    const assignees = await getAvailableAssignees();
+    const taskAssignees = resolveNotionAssignees(
+      assignees,
+      task.assigneeIds,
+      task.assigneeId,
+    );
+    const schema = await getDataSourceSchema(notion, databaseId);
+
+    if (!schema) {
+      return {
+        state: "failed",
+        error: "No data source found for the configured Notion database.",
+      };
+    }
+
+    const notionDueDate = task.dueDate || task.targetPublishDate;
+    const parentProperties = buildPageProperties({
+      schema,
+      title: taskDisplayTitle(task),
+      status: task.status,
+      assignees: taskAssignees,
+      dueDate: notionDueDate,
+      taskType: "main",
+    });
+
+    if (!parentProperties) {
+      return {
+        state: "failed",
+        error: "No title property found in the configured Notion database.",
+      };
+    }
+
+    const metadataLines = [
+      task.projectCode ? `项目编号：[${task.projectCode}]` : "",
+      task.kind === "video" ? "类型：视频项目" : "类型：普通任务",
+      task.contentSeries ? `系列：${task.contentSeries}` : "",
+      task.weekLabel ? `周期：${task.weekLabel}` : "",
+      task.targetPublishDate ? `目标发布：${task.targetPublishDate}` : "",
+      task.platforms?.length ? `平台：${task.platforms.join(" / ")}` : "",
+    ].filter(Boolean);
+
     const page = await notion.pages.create({
       parent: schema.isStandardDatabase
         ? { database_id: schema.dataSourceId }

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useTransition } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { 
   Plus, Layout, Settings, Search, Bell, 
@@ -13,18 +13,16 @@ import {
   Sparkles, Film
 } from 'lucide-react';
 import type { Task, Assignee, TaskStep, StepStatus, TaskStatus, Priority } from '@/lib/types';
-import { 
-  publishTaskAction, 
-  updateTaskDetailsAction, 
-  deleteTaskAction, 
-  updateStepAction,
-  toggleStepAction,
-  updateStatusAction
-} from './actions';
 import { logoutAction } from './auth-actions';
 import { shotTechniques } from '@/lib/shot-techniques';
 
 const PLATFORMS = ['小红书', '抖音', 'B站', '视频号', 'YouTube'];
+
+type ToastMessage = {
+  id: number;
+  message: string;
+  type: string;
+};
 
 // Reusable avatar component with fallback to initials
 const renderAvatar = (assignee: Assignee, sizeClass = "w-7 h-7") => {
@@ -48,7 +46,7 @@ const renderAvatar = (assignee: Assignee, sizeClass = "w-7 h-7") => {
 };
 
 let toastCount = 0;
-const ToastContainer = ({ toasts }: { toasts: any[] }) => (
+const ToastContainer = ({ toasts }: { toasts: ToastMessage[] }) => (
   <div className="fixed bottom-6 right-6 z-[999] flex flex-col gap-3 w-[90vw] md:w-[380px] pointer-events-none">
     {toasts.map(t => (
       <div key={t.id} className={`flex items-center gap-3.5 px-4.5 py-4 rounded-2xl shadow-xl border pointer-events-auto transition-all animate-in fade-in slide-in-from-bottom-5 duration-350 ease-out
@@ -82,11 +80,12 @@ export function ClientApp({
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(initialTasks[0]?.id || null);
   const [mobileView, setMobileView] = useState<'list'|'detail'>('list');
   const [drawerConfig, setDrawerConfig] = useState<{ isOpen: boolean, taskToEdit: Task | null }>({ isOpen: false, taskToEdit: null });
-  const [toasts, setToasts] = useState<any[]>([]);
+  const [toasts, setToasts] = useState<ToastMessage[]>([]);
   const [deleteModal, setDeleteModal] = useState<{ isOpen: boolean, taskId: string | null }>({ isOpen: false, taskId: null });
   const [assigneeModal, setAssigneeModal] = useState<{ isOpen: boolean, step: TaskStep | null }>({ isOpen: false, step: null });
   const [expandedStep, setExpandedStep] = useState<string | null>(null);
-  const [isPending, startTransition] = useTransition();
+  const [taskFormPending, setTaskFormPending] = useState(false);
+  const [deletePending, setDeletePending] = useState(false);
 
 
 
@@ -111,7 +110,6 @@ export function ClientApp({
   // Read URL params for Toast Messages
   useEffect(() => {
     const created = searchParams.get('created');
-    const notion = searchParams.get('notion');
     const error = searchParams.get('error');
     const del = searchParams.get('delete');
     const update = searchParams.get('update');
@@ -156,13 +154,57 @@ export function ClientApp({
     }
   }, [searchParams]);
 
-  const showToast = (message: string, type = 'default', duration = 3000) => {
+  function showToast(message: string, type = 'default', duration = 3000) {
     const id = ++toastCount;
     setToasts(prev => [...prev, { id, message, type }]);
     if (duration > 0) setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), duration);
     return id;
-  };
+  }
+
   const removeToast = (id: number) => setToasts(prev => prev.filter(t => t.id !== id));
+
+  const readJson = async (response: Response) => {
+    try {
+      return await response.json();
+    } catch {
+      return {};
+    }
+  };
+
+  const errorMessageFromResponse = (data: unknown) => {
+    if (data && typeof data === 'object') {
+      const record = data as Record<string, unknown>;
+
+      return String(record.detail || record.error || '未知服务端错误');
+    }
+
+    return '未知服务端错误';
+  };
+
+  const refreshTaskList = async (nextSelectedTaskId?: string | null) => {
+    const response = await fetch('/api/tasks', { cache: 'no-store' });
+    const data = await readJson(response);
+
+    if (!response.ok) {
+      throw new Error(errorMessageFromResponse(data));
+    }
+
+    if (Array.isArray(data.tasks)) {
+      setTasks(data.tasks);
+
+      if (nextSelectedTaskId && data.tasks.some((task: Task) => task.id === nextSelectedTaskId)) {
+        setSelectedTaskId(nextSelectedTaskId);
+      } else if (!nextSelectedTaskId && data.tasks.length > 0) {
+        setSelectedTaskId((current) =>
+          current && data.tasks.some((task: Task) => task.id === current)
+            ? current
+            : data.tasks[0].id,
+        );
+      } else if (data.tasks.length === 0) {
+        setSelectedTaskId(null);
+      }
+    }
+  };
 
   // Filtering & Sorting
   const filteredTasks = tasks
@@ -263,33 +305,103 @@ export function ClientApp({
       };
     }));
 
-    // 2. background async submission
-    const formData = new FormData();
-    formData.append("taskId", selectedTask.id);
-    formData.append("stepId", step.id);
-    formData.append("completed", String(nextCompleted));
+    const toastId = showToast(
+      nextCompleted ? '正在同步步骤完成状态...' : '正在撤回步骤完成状态...',
+      'loading',
+      0,
+    );
 
-    startTransition(async () => {
-      await toggleStepAction(formData);
+    try {
+      const response = await fetch('/api/tasks', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: selectedTask.id,
+          stepId: step.id,
+          status: nextCompleted ? 'done' : 'todo',
+          title: step.title,
+          phase: step.phase || '',
+          description: step.description || '',
+          assigneeId: currentAssignees[0] || '',
+          assigneeIds: currentAssignees,
+          dueDate: step.dueDate || '',
+          audioSegments: step.audioSegments,
+        }),
+      });
+      const data = await readJson(response);
+      removeToast(toastId);
+
+      if (!response.ok) {
+        throw new Error(errorMessageFromResponse(data));
+      }
+
+      showToast(
+        data.state === 'updated_local_remote_failed'
+          ? '步骤已保存，但同步 Notion 异常。'
+          : '步骤状态已同步更新。',
+        data.state === 'updated_local_remote_failed' ? 'warn' : 'success',
+      );
+      await refreshTaskList(selectedTask.id);
       router.refresh();
-    });
+    } catch (err) {
+      removeToast(toastId);
+      setTasks(prev => prev.map(t => {
+        if (t.id !== selectedTask.id) return t;
+        return {
+          ...t,
+          steps: t.steps.map(s => {
+            if (s.id !== step.id) return s;
+            return { ...s, status: step.status, completed: step.completed };
+          })
+        };
+      }));
+      showToast(`步骤状态同步失败: ${err instanceof Error ? err.message : '未知错误'}`, 'error');
+    }
   };
 
   // Optimistic UI update for Task Status change
   const handleTaskStatusChange = async (status: TaskStatus) => {
+    const previousStatus = selectedTask.status;
+
     setTasks(prev => prev.map(t => {
       if (t.id !== selectedTask.id) return t;
       return { ...t, status };
     }));
 
-    const formData = new FormData();
-    formData.append("taskId", selectedTask.id);
-    formData.append("status", status);
+    const toastId = showToast('正在同步主任务状态...', 'loading', 0);
 
-    startTransition(async () => {
-      await updateStatusAction(formData);
+    try {
+      const response = await fetch('/api/tasks', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: selectedTask.id,
+          status,
+        }),
+      });
+      const data = await readJson(response);
+      removeToast(toastId);
+
+      if (!response.ok) {
+        throw new Error(errorMessageFromResponse(data));
+      }
+
+      showToast(
+        data.state === 'updated_local_remote_failed'
+          ? '主任务已保存，但同步 Notion 异常。'
+          : '主任务状态已同步更新。',
+        data.state === 'updated_local_remote_failed' ? 'warn' : 'success',
+      );
+      await refreshTaskList(selectedTask.id);
       router.refresh();
-    });
+    } catch (err) {
+      removeToast(toastId);
+      setTasks(prev => prev.map(t => {
+        if (t.id !== selectedTask.id) return t;
+        return { ...t, status: previousStatus };
+      }));
+      showToast(`主任务状态同步失败: ${err instanceof Error ? err.message : '未知错误'}`, 'error');
+    }
   };
 
   // Dynamic Save Step Assignees from Modal (No Page Reload)
@@ -340,9 +452,10 @@ export function ClientApp({
       removeToast(toastId);
       if (response.ok) {
         showToast('负责人已成功同步更新', 'success');
+        await refreshTaskList(selectedTask.id);
         router.refresh();
       } else {
-        showToast(`更新失败: ${resData.error || '未知错误'}`, 'error');
+        showToast(`更新失败: ${errorMessageFromResponse(resData)}`, 'error');
       }
     } catch (err) {
       removeToast(toastId);
@@ -412,13 +525,146 @@ export function ClientApp({
       removeToast(toastId);
       if (response.ok) {
         showToast('子任务属性已同步更新', 'success');
+        await refreshTaskList(selectedTask.id);
         router.refresh();
       } else {
-        showToast(`保存失败: ${resData.error || '未知错误'}`, 'error');
+        showToast(`保存失败: ${errorMessageFromResponse(resData)}`, 'error');
       }
     } catch (err) {
       removeToast(toastId);
       showToast('网络连接失败，请稍后重试。', 'error');
+    }
+  };
+
+  const formString = (formData: FormData, key: string) =>
+    String(formData.get(key) ?? '').trim();
+
+  const formStringList = (formData: FormData, key: string) =>
+    formData.getAll(key).map(String).map((value) => value.trim()).filter(Boolean);
+
+  const handleSubmitTaskForm = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+
+    if (taskFormPending) return;
+
+    const formData = new FormData(e.currentTarget);
+    const isEdit = Boolean(drawerConfig.taskToEdit);
+    const taskId = drawerConfig.taskToEdit?.id;
+    const assigneeIds = formStringList(formData, 'assigneeIds');
+    const stepAssigneeIds = formStringList(formData, 'stepAssigneeIds');
+    const rawSteps = formString(formData, 'steps')
+      .split('\n')
+      .map((step) => step.trim())
+      .filter(Boolean);
+    const payload = {
+      ...(isEdit ? { action: 'updateTask', id: taskId } : {}),
+      kind: formString(formData, 'kind') || 'video',
+      title: formString(formData, 'title'),
+      summary: formString(formData, 'summary'),
+      status: formString(formData, 'status') || drawerConfig.taskToEdit?.status || 'active',
+      priority: formString(formData, 'priority') || 'medium',
+      assigneeId: assigneeIds[0] || assignees[0]?.id || '',
+      assigneeIds,
+      stepAssigneeId: stepAssigneeIds[0] || assigneeIds[0] || assignees[0]?.id || '',
+      stepAssigneeIds,
+      dueDate: formString(formData, 'dueDate'),
+      contentSeries: formString(formData, 'contentSeries'),
+      weekLabel: formString(formData, 'weekLabel'),
+      platforms: formStringList(formData, 'platforms'),
+      targetPublishDate: formString(formData, 'targetPublishDate'),
+      steps: rawSteps,
+    };
+
+    if (!payload.title || !payload.summary) {
+      showToast('请填写任务标题和任务摘要。', 'error');
+      return;
+    }
+
+    setTaskFormPending(true);
+    const toastId = showToast(
+      isEdit ? '正在保存任务并同步 Notion...' : '正在创建任务并发布到 Notion...',
+      'loading',
+      0,
+    );
+
+    try {
+      const response = await fetch('/api/tasks', {
+        method: isEdit ? 'PATCH' : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await readJson(response);
+      removeToast(toastId);
+
+      if (!response.ok) {
+        throw new Error(errorMessageFromResponse(data));
+      }
+
+      const nextTaskId = isEdit ? taskId : data.task?.id;
+
+      await refreshTaskList(nextTaskId);
+      setSelectedTaskId(nextTaskId || selectedTaskId);
+      setMobileView('detail');
+      setDrawerConfig({ isOpen: false, taskToEdit: null });
+      showToast(
+        isEdit
+          ? data.state === 'updated_local_remote_failed'
+            ? '任务已保存，但同步 Notion 异常。'
+            : '任务属性已同步更新。'
+          : data.task?.notion?.state === 'published'
+            ? '任务已创建并同步到 Notion。'
+            : '任务已保存到数据库，但 Notion 同步异常。',
+        isEdit
+          ? data.state === 'updated_local_remote_failed' ? 'warn' : 'success'
+          : data.task?.notion?.state === 'published' ? 'success' : 'warn',
+      );
+      router.refresh();
+    } catch (err) {
+      removeToast(toastId);
+      showToast(`任务保存失败: ${err instanceof Error ? err.message : '未知错误'}`, 'error');
+    } finally {
+      setTaskFormPending(false);
+    }
+  };
+
+  const handleDeleteTask = async () => {
+    const taskId = deleteModal.taskId;
+
+    if (!taskId || deletePending) return;
+
+    setDeletePending(true);
+    const toastId = showToast('正在删除任务并同步清理 Notion...', 'loading', 0);
+
+    try {
+      const response = await fetch(`/api/tasks?id=${encodeURIComponent(taskId)}`, {
+        method: 'DELETE',
+      });
+      const data = await readJson(response);
+      removeToast(toastId);
+
+      if (!response.ok) {
+        throw new Error(errorMessageFromResponse(data));
+      }
+
+      const remainingTasks = tasks.filter((task) => task.id !== taskId);
+      const nextTaskId = remainingTasks[0]?.id ?? null;
+
+      setTasks(remainingTasks);
+      setSelectedTaskId(nextTaskId);
+      setDeleteModal({ isOpen: false, taskId: null });
+      showToast(
+        data.state === 'deleted_local_remote_failed'
+          ? '任务已从数据库删除，但 Notion 页面清理异常。'
+          : '任务已删除，Notion 页面已同步清理。',
+        data.state === 'deleted_local_remote_failed' ? 'warn' : 'success',
+      );
+      await refreshTaskList(nextTaskId);
+      router.refresh();
+    } catch (err) {
+      removeToast(toastId);
+      showToast(`删除任务失败: ${err instanceof Error ? err.message : '未知错误'}`, 'error');
+    } finally {
+      setDeletePending(false);
     }
   };
 
@@ -587,7 +833,7 @@ export function ClientApp({
                 className="w-full h-10 pl-10 pr-3.5 bg-slate-50/50 border border-slate-200 rounded-xl text-xs font-semibold outline-none transition duration-205 focus:border-blue-500 focus:bg-white focus:ring-4 focus:ring-blue-500/10 placeholder-slate-400 shadow-inner"
               />
             </div>
-            <button 
+            <button
               onClick={() => setShowFilters(!showFilters)}
               className={`h-10 px-3 border rounded-xl flex items-center justify-center transition-all duration-200 active:scale-95 cursor-pointer shadow-sm
                 ${showFilters ? 'bg-blue-50 border-blue-200 text-blue-600' : 'bg-white border-slate-200/80 text-slate-500 hover:text-slate-700 hover:bg-slate-55'}`}
@@ -1191,16 +1437,15 @@ export function ClientApp({
           <p className="text-slate-550 text-xs leading-relaxed mb-6 font-semibold">此操作将从数据库永久清理该任务，同时同步移除 Notion 协作空间中的关联页面，且无法恢复。</p>
           <div className="flex justify-end gap-3">
             <button onClick={() => setDeleteModal({ isOpen: false, taskId: null })} className="px-4 py-2.5 text-xs font-bold border border-slate-250 rounded-xl hover:bg-slate-55 transition-colors cursor-pointer">取消</button>
-            <form action={deleteTaskAction}>
-              <input type="hidden" name="taskId" value={deleteModal.taskId || ""} />
-              <button 
-                type="submit" 
-                onClick={() => setDeleteModal({ isOpen: false, taskId: null })}
-                className="px-4 py-2.5 text-xs font-bold bg-rose-600 text-white rounded-xl hover:bg-rose-700 transition-colors shadow-md shadow-rose-100 cursor-pointer"
-              >
-                确认删除
-              </button>
-            </form>
+            <button
+              type="button"
+              onClick={handleDeleteTask}
+              disabled={deletePending}
+              className="px-4 py-2.5 text-xs font-bold bg-rose-600 text-white rounded-xl hover:bg-rose-700 transition-colors shadow-md shadow-rose-100 cursor-pointer disabled:pointer-events-none disabled:opacity-70 inline-flex items-center gap-2"
+            >
+              {deletePending && <RefreshCw size={13} className="animate-spin" />}
+              {deletePending ? '正在删除' : '确认删除'}
+            </button>
           </div>
         </div>
       </div>
@@ -1295,7 +1540,7 @@ export function ClientApp({
               <form 
                 id="task-form" 
                 key={drawerConfig.taskToEdit?.id || 'new-task'}
-                action={drawerConfig.taskToEdit ? updateTaskDetailsAction : publishTaskAction} 
+                onSubmit={handleSubmitTaskForm}
                 className="space-y-5"
               >
                 {drawerConfig.taskToEdit && (
@@ -1443,12 +1688,13 @@ export function ClientApp({
             <button 
               form="task-form" 
               type="submit" 
-              onClick={() => {
-                setTimeout(() => setDrawerConfig({ isOpen: false, taskToEdit: null }), 120);
-              }}
-              className="w-full py-3 bg-slate-900 hover:bg-blue-600 text-white text-xs font-bold rounded-xl transition-all duration-200 shadow-md hover:shadow-lg active:scale-[0.98] flex items-center justify-center gap-2 cursor-pointer"
+              disabled={taskFormPending}
+              className="w-full py-3 bg-slate-900 hover:bg-blue-600 text-white text-xs font-bold rounded-xl transition-all duration-200 shadow-md hover:shadow-lg active:scale-[0.98] flex items-center justify-center gap-2 cursor-pointer disabled:pointer-events-none disabled:opacity-75"
             >
-              {drawerConfig.taskToEdit ? '保存属性并同步' : '生成工作流并同步 Notion'}
+              {taskFormPending && <RefreshCw size={14} className="animate-spin" />}
+              {taskFormPending
+                ? drawerConfig.taskToEdit ? '正在保存并同步...' : '正在创建并同步...'
+                : drawerConfig.taskToEdit ? '保存属性并同步' : '生成工作流并同步 Notion'}
             </button>
           </div>
         </div>
