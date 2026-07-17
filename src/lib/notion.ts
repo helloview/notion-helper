@@ -7,6 +7,12 @@ import type {
   UpdateTaskInput,
 } from "./types";
 import { fallbackAssignees, getFallbackAssignee } from "./assignees";
+import {
+  applyAccessMetadataToAssignees,
+  getAccessUsers,
+  getManagedAccessAssignees,
+  getManagedNotionGuestIds,
+} from "./access-control";
 
 type PublishResult =
   | { state: "not_configured" }
@@ -226,13 +232,6 @@ function toAssignee(
     source: "notion",
     origin,
   };
-}
-
-function configuredGuestUserIds() {
-  return (process.env.NOTION_GUEST_USER_IDS ?? "")
-    .split(",")
-    .map((id) => id.trim())
-    .filter(Boolean);
 }
 
 async function getDataSourceSchema(
@@ -1200,15 +1199,18 @@ async function listWorkspaceUsers(notion: Client) {
 }
 
 async function retrieveConfiguredGuests(notion: Client) {
-  const guestIds = configuredGuestUserIds();
+  const guestIds = await getManagedNotionGuestIds();
 
   if (guestIds.length === 0) return [];
+
+  const accessUsers = await getAccessUsers();
 
   const guests = await Promise.all(
     guestIds.map(async (userId) => {
       try {
         const user = await notion.users.retrieve({ user_id: userId });
-        return toAssignee(user, "manual_guest");
+        const assignee = toAssignee(user, "manual_guest");
+        return assignee ? applyAccessMetadataToAssignees([assignee], accessUsers)[0] : null;
       } catch {
         return null;
       }
@@ -1271,20 +1273,28 @@ export async function getAvailableAssignees(): Promise<Assignee[]> {
   const notion = getNotionClient();
 
   if (!notion) {
-    return fallbackAssignees;
+    try {
+      const managedAccessAssignees = await getManagedAccessAssignees();
+      return mergeAssignees([managedAccessAssignees, fallbackAssignees]);
+    } catch {
+      return fallbackAssignees;
+    }
   }
 
   try {
-    const [workspaceUsers, databasePeople, configuredGuests] = await Promise.all([
+    const [workspaceUsers, databasePeople, configuredGuests, managedAccessAssignees, accessUsers] = await Promise.all([
       listWorkspaceUsers(notion),
       listPeopleFromDatabase(notion),
       retrieveConfiguredGuests(notion),
+      getManagedAccessAssignees(),
+      getAccessUsers(),
     ]);
-    const users = mergeAssignees([
+    const users = applyAccessMetadataToAssignees(mergeAssignees([
       workspaceUsers,
       databasePeople,
       configuredGuests,
-    ]);
+      managedAccessAssignees,
+    ]), accessUsers);
 
     return users.length > 0 ? users : fallbackAssignees;
   } catch {

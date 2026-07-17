@@ -1,6 +1,7 @@
 import { getTasks } from "@/lib/local-store";
 import { getAvailableAssignees } from "@/lib/notion";
 import { getSessionUser } from "@/lib/auth";
+import { isBootstrapSuperAdminEmail } from "@/lib/access-control";
 import { redirect } from "next/navigation";
 import { ClientApp } from "./client-app";
 
@@ -26,6 +27,7 @@ export default async function Home() {
       assignees={assignees} 
       currentUser={session.user}
       currentRole={session.role}
+      canManageAccess={session.user.email ? isBootstrapSuperAdminEmail(session.user.email) : false}
     />
   );
 }

@@ -3,6 +3,11 @@ import { getAvailableAssignees } from "./notion";
 import { cookies } from "next/headers";
 import { sendEmail } from "./mailer";
 import type { Assignee } from "./types";
+import {
+  accessUserToAssignee,
+  getAccessUserByEmail,
+  getAccessUsers,
+} from "./access-control";
 
 const OTP_COLLECTION = "user_otps";
 const SESSION_COLLECTION = "user_sessions";
@@ -19,26 +24,22 @@ export type UserSession = {
 // Generate 6-digit OTP and send email
 export async function sendOtp(email: string): Promise<{ success: boolean; error?: string }> {
   const cleanedEmail = email.trim().toLowerCase();
-  
-  // Verify if the email belongs to any registered assignee (either notion or fallback)
+
+  const accessUser = await getAccessUserByEmail(cleanedEmail);
+
+  if (!accessUser) {
+    return { success: false, error: "该账号未被加入系统授权登录名单，请联系超级管理员配置。" };
+  }
+
+  // Verify if the email belongs to any registered assignee or managed access user.
   const assignees = await getAvailableAssignees();
-  const matchedAssignee = assignees.find(a => a.email?.trim().toLowerCase() === cleanedEmail);
+  const matchedAssignee =
+    assignees.find(a => a.email?.trim().toLowerCase() === cleanedEmail) ??
+    assignees.find(a => accessUser.notionUserId && a.notionUserId === accessUser.notionUserId) ??
+    accessUserToAssignee(accessUser);
   
   if (!matchedAssignee) {
     return { success: false, error: "该邮箱未关联任何工作流团队成员，请确认拼写。" };
-  }
-
-  // Dual-layer whitelist check: If ALLOWED_EMAILS is configured, enforce strict match
-  const allowedEmailsStr = process.env.ALLOWED_EMAILS;
-  if (allowedEmailsStr) {
-    const allowedList = allowedEmailsStr
-      .split(",")
-      .map(e => e.trim().toLowerCase())
-      .filter(Boolean);
-    
-    if (!allowedList.includes(cleanedEmail)) {
-      return { success: false, error: "该账号未被加入系统授权登录白名单，请联系管理员配置。" };
-    }
   }
 
   // Generate 6-digit random code
@@ -109,7 +110,11 @@ export async function verifyOtp(email: string, code: string): Promise<{ success:
 
   // Get matched Assignee details to bind Session
   const assignees = await getAvailableAssignees();
-  const matchedAssignee = assignees.find(a => a.email?.trim().toLowerCase() === cleanedEmail);
+  const accessUser = await getAccessUserByEmail(cleanedEmail);
+  const matchedAssignee =
+    assignees.find(a => a.email?.trim().toLowerCase() === cleanedEmail) ??
+    assignees.find(a => accessUser?.notionUserId && a.notionUserId === accessUser.notionUserId) ??
+    (accessUser ? accessUserToAssignee(accessUser) : null);
   
   if (!matchedAssignee) {
     return { success: false, error: "绑定用户失败。" };
@@ -150,8 +155,16 @@ export async function getSessionUser(): Promise<{ user: Assignee; role: "admin" 
   if (!token) {
     // Automatically bypass login check during local development
     if (process.env.NODE_ENV === "development" || process.env.BYPASS_LOGIN === "true") {
-      const assignees = await getAvailableAssignees();
-      const defaultAdmin = assignees.find(a => a.id === "owner" || a.name.includes("Yuxuan")) || assignees[0];
+      const [assignees, accessUsers] = await Promise.all([
+        getAvailableAssignees(),
+        getAccessUsers(),
+      ]);
+      const bootstrapAdmin = accessUsers.find((user) => user.role === "super_admin" && user.active);
+      const defaultAdmin = bootstrapAdmin
+        ? assignees.find((assignee) => assignee.email === bootstrapAdmin.email) ??
+          assignees.find((assignee) => assignee.notionUserId === bootstrapAdmin.notionUserId) ??
+          accessUserToAssignee(bootstrapAdmin)
+        : assignees.find(a => a.id === "owner" || a.name.includes("Yuxuan")) || assignees[0];
       if (defaultAdmin) {
         return {
           user: defaultAdmin,
@@ -174,16 +187,18 @@ export async function getSessionUser(): Promise<{ user: Assignee; role: "admin" 
   }
 
   const assignees = await getAvailableAssignees();
-  const assignee = assignees.find(a => a.id === session.assigneeId);
+  const accessUser = await getAccessUserByEmail(session.email);
+  const assignee =
+    assignees.find(a => a.id === session.assigneeId) ??
+    assignees.find(a => accessUser?.notionUserId && a.notionUserId === accessUser.notionUserId) ??
+    (accessUser ? accessUserToAssignee(accessUser) : null);
   
   if (!assignee) return null;
-
-  // Determine Role: Yuxuan/Owner is Admin, others are Member
-  const isAdmin = assignee.id === "owner" || assignee.role?.toLowerCase() === "owner" || assignee.name.includes("Yuxuan");
+  if (!accessUser) return null;
   
   return {
     user: assignee,
-    role: isAdmin ? "admin" : "member",
+    role: accessUser.role === "member" ? "member" : "admin",
   };
 }
 

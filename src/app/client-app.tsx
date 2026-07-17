@@ -1,5 +1,6 @@
 "use client";
 
+import Link from 'next/link';
 import React, { useState, useEffect } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { 
@@ -10,7 +11,7 @@ import {
   UploadCloud, FileAudio, MessageSquare, Zap, ChevronRight,
   AlignLeft, Play, Clock, Edit3, UserCircle, ChevronDown, ChevronLeft,
   SlidersHorizontal, CheckSquare, Square, Layers, Link as LinkIcon, Flag, LogOut,
-  Sparkles, Film
+  Sparkles, Film, ShieldCheck
 } from 'lucide-react';
 import type { Task, Assignee, TaskStep, StepStatus, TaskStatus, Priority } from '@/lib/types';
 import { logoutAction } from './auth-actions';
@@ -69,12 +70,14 @@ export function ClientApp({
   initialTasks, 
   assignees,
   currentUser,
-  currentRole
+  currentRole,
+  canManageAccess = false
 }: { 
   initialTasks: Task[], 
   assignees: Assignee[],
   currentUser: Assignee,
-  currentRole: 'admin' | 'member'
+  currentRole: 'admin' | 'member',
+  canManageAccess?: boolean
 }) {
   const [tasks, setTasks] = useState(initialTasks);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(initialTasks[0]?.id || null);
@@ -751,6 +754,16 @@ export function ClientApp({
           >
             <MonitorPlay size={20} />
           </button>
+
+          {canManageAccess && (
+            <Link
+              href="/admin/access"
+              className="hidden md:flex w-12 h-12 md:w-full md:aspect-square items-center justify-center rounded-xl text-slate-400 transition-all duration-300 hover:bg-slate-800/80 hover:text-white active:scale-90"
+              title="访问权限中心"
+            >
+              <ShieldCheck size={20} />
+            </Link>
+          )}
 
           {/* Mobile User Profile Avatar (Middle) */}
           <div className="md:hidden flex items-center justify-center w-12 h-12 relative" title={`${currentUser.name} (${currentUser.role})`}>

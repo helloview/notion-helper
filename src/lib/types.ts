@@ -45,7 +45,7 @@ export type Assignee = {
   notionUserId?: string;
   avatarUrl?: string;
   source: "notion" | "local";
-  origin?: "workspace_user" | "database_people" | "manual_guest";
+  origin?: "workspace_user" | "database_people" | "manual_guest" | "managed_access";
 };
 
 export type TaskStep = {
