@@ -1,3 +1,4 @@
+import { cache } from "react";
 import { getMongoDb } from "./mongodb";
 import { getAvailableAssignees } from "./notion";
 import { cookies } from "next/headers";
@@ -147,8 +148,10 @@ export async function verifyOtp(email: string, code: string): Promise<{ success:
   return { success: true };
 }
 
-// Get current active session user details
-export async function getSessionUser(): Promise<{ user: Assignee; role: "admin" | "member" } | null> {
+// Get current active session user details.
+// Wrapped in React cache() so layout + page share one lookup per request
+// instead of each hitting Notion/Mongo separately.
+export const getSessionUser = cache(async function getSessionUser(): Promise<{ user: Assignee; role: "admin" | "member" } | null> {
   const cookieStore = await cookies();
   const token = cookieStore.get(COOKIE_NAME)?.value;
   
@@ -200,7 +203,7 @@ export async function getSessionUser(): Promise<{ user: Assignee; role: "admin" 
     user: assignee,
     role: accessUser.role === "member" ? "member" : "admin",
   };
-}
+});
 
 // Clear session cookie to logout
 export async function logoutUser() {

@@ -1269,7 +1269,28 @@ export function canReadNotionUsers() {
   return Boolean(process.env.NOTION_TOKEN);
 }
 
-export async function getAvailableAssignees(): Promise<Assignee[]> {
+// Assignee resolution fans out to several Notion API calls; cache the result
+// briefly so page loads don't refetch Notion every time.
+const ASSIGNEES_CACHE_TTL_MS = 60_000;
+let assigneesCache: { expiresAt: number; promise: Promise<Assignee[]> } | null = null;
+
+export function invalidateAssigneesCache() {
+  assigneesCache = null;
+}
+
+export function getAvailableAssignees(): Promise<Assignee[]> {
+  const now = Date.now();
+
+  if (assigneesCache && assigneesCache.expiresAt > now) {
+    return assigneesCache.promise;
+  }
+
+  const promise = loadAvailableAssignees();
+  assigneesCache = { expiresAt: now + ASSIGNEES_CACHE_TTL_MS, promise };
+  return promise;
+}
+
+async function loadAvailableAssignees(): Promise<Assignee[]> {
   const notion = getNotionClient();
 
   if (!notion) {

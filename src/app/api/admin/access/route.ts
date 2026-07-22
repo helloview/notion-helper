@@ -9,7 +9,7 @@ import {
   upsertAccessUser,
   type AccessRole,
 } from "@/lib/access-control";
-import { getAvailableAssignees } from "@/lib/notion";
+import { getAvailableAssignees, invalidateAssigneesCache } from "@/lib/notion";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -53,10 +53,10 @@ async function requireBootstrapSuperAdmin() {
   };
 }
 
-async function accessPayload() {
+async function accessPayload({ includeNotionUsers = false } = {}) {
   const [users, assignees, managedGuestIds] = await Promise.all([
     getAccessUsers(),
-    getAvailableAssignees(),
+    includeNotionUsers ? getAvailableAssignees() : Promise.resolve([]),
     getManagedNotionGuestIds(),
   ]);
 
@@ -87,12 +87,15 @@ async function accessPayload() {
   };
 }
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
     const guard = await requireBootstrapSuperAdmin();
     if (!guard.ok) return guard.response;
 
-    return NextResponse.json(await accessPayload());
+    const { searchParams } = new URL(request.url);
+    const includeNotionUsers = searchParams.get("includeNotion") === "1";
+
+    return NextResponse.json(await accessPayload({ includeNotionUsers }));
   } catch (error) {
     return apiError("GET", error);
   }
@@ -116,6 +119,7 @@ export async function POST(request: Request) {
       },
       guard.actorEmail,
     );
+    invalidateAssigneesCache();
 
     return NextResponse.json(await accessPayload());
   } catch (error) {
@@ -136,6 +140,7 @@ export async function DELETE(request: Request) {
     }
 
     await deleteAccessUser(email);
+    invalidateAssigneesCache();
 
     return NextResponse.json(await accessPayload());
   } catch (error) {

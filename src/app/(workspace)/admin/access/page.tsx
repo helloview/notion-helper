@@ -6,7 +6,6 @@ import {
   getManagedNotionGuestIds,
   isBootstrapSuperAdminEmail,
 } from "@/lib/access-control";
-import { getAvailableAssignees } from "@/lib/notion";
 import { AccessAdminClient } from "./access-admin-client";
 
 export const runtime = "nodejs";
@@ -27,38 +26,27 @@ export default async function AccessAdminPage() {
     redirect("/");
   }
 
-  const [users, assignees, managedGuestIds] = await Promise.all([
+  const [users, managedGuestIds] = await Promise.all([
     getAccessUsers(),
-    getAvailableAssignees(),
     getManagedNotionGuestIds(),
   ]);
-  const notionUsers = [
-    ...new Map(
-      assignees
-        .filter((assignee) => assignee.notionUserId)
-        .map((assignee) => [
-          assignee.notionUserId as string,
-          {
-            id: assignee.id,
-            name: assignee.name,
-            email: assignee.email,
-            role: assignee.role,
-            notionUserId: assignee.notionUserId,
-            origin: assignee.origin,
-            avatarUrl: assignee.avatarUrl,
-          },
-        ]),
-    ).values(),
-  ].sort((first, second) => first.name.localeCompare(second.name));
 
   return (
     <AccessAdminClient
       currentEmail={session.user.email ?? ""}
+      currentIdentity={{
+        id: session.user.id,
+        name: session.user.name,
+        email: session.user.email,
+        role: session.user.role,
+        notionUserId: session.user.notionUserId,
+        avatarUrl: session.user.avatarUrl,
+      }}
       initialPayload={{
         users,
         bootstrapEmails: getBootstrapSuperAdminEmails(),
         managedGuestIds,
-        notionUsers,
+        notionUsers: [],
       }}
     />
   );

@@ -48,6 +48,13 @@ function displayNameFromEmail(email: string) {
   return email.split("@")[0] || email;
 }
 
+function normalizeBootstrapDisplayName(name: string | undefined, email: string) {
+  const normalized = name?.trim();
+  return normalized && normalized !== "最高权限管理员"
+    ? normalized
+    : displayNameFromEmail(email);
+}
+
 function parseEmailList(value?: string) {
   return [
     ...new Set(
@@ -105,7 +112,7 @@ function mergeBootstrapUsers(users: AccessUser[]) {
     byEmail.set(email, {
       id: existing?.id ?? `bootstrap:${email}`,
       email,
-      name: existing?.name || "最高权限管理员",
+      name: normalizeBootstrapDisplayName(existing?.name, email),
       role: "super_admin",
       notionUserId: existing?.notionUserId,
       active: true,
@@ -125,7 +132,31 @@ function mergeBootstrapUsers(users: AccessUser[]) {
   });
 }
 
-export async function getAccessUsers() {
+// getAccessUsers is called several times per request (session check, page
+// data, guest-id resolution); cache briefly and invalidate on writes.
+const ACCESS_USERS_CACHE_TTL_MS = 30_000;
+let accessUsersCache: { expiresAt: number; promise: Promise<AccessUser[]> } | null = null;
+
+export function invalidateAccessUsersCache() {
+  accessUsersCache = null;
+}
+
+export function getAccessUsers(): Promise<AccessUser[]> {
+  const now = Date.now();
+
+  if (accessUsersCache && accessUsersCache.expiresAt > now) {
+    return accessUsersCache.promise;
+  }
+
+  const promise = loadAccessUsers().catch((error) => {
+    accessUsersCache = null;
+    throw error;
+  });
+  accessUsersCache = { expiresAt: now + ACCESS_USERS_CACHE_TTL_MS, promise };
+  return promise;
+}
+
+async function loadAccessUsers() {
   const collection = await getAccessUsersCollection();
   const users = await collection.find({}).sort({ updatedAt: -1 }).toArray();
   return mergeBootstrapUsers(users.map(stripMongoId));
@@ -201,9 +232,14 @@ export function applyAccessMetadataToAssignees(assignees: Assignee[], accessUser
 
     if (!accessUser) return assignee;
 
+    const hasRealNotionIdentity =
+      assignee.source === "notion" &&
+      assignee.name.trim().length > 0 &&
+      assignee.name !== "Unnamed Notion user";
+
     return {
       ...assignee,
-      name: accessUser.name || assignee.name,
+      name: hasRealNotionIdentity ? assignee.name : accessUser.name || assignee.name,
       role: accessRoleLabel(accessUser.role),
       email: accessUser.email,
       notionUserId: accessUser.notionUserId ?? assignee.notionUserId,
@@ -254,6 +290,7 @@ export async function upsertAccessUser(input: AccessUserInput, actorEmail?: stri
   };
 
   await collection.updateOne({ email }, update, { upsert: true });
+  invalidateAccessUsersCache();
   return getAccessUserByEmail(email);
 }
 
@@ -266,4 +303,5 @@ export async function deleteAccessUser(email: string) {
 
   const collection = await getAccessUsersCollection();
   await collection.deleteOne({ email: normalizedEmail });
+  invalidateAccessUsersCache();
 }

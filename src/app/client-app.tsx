@@ -1,21 +1,18 @@
 "use client";
 
-import Link from 'next/link';
+import Image from 'next/image';
 import React, { useState, useEffect } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { 
-  Plus, Layout, Settings, Search, Bell, 
-  CheckCircle2, Circle, CircleDashed, MoreHorizontal, 
-  Calendar, Tag, MonitorPlay, Trash2, X, AlertCircle, 
-  PlayCircle, User, Check, RefreshCw, FileText,
-  UploadCloud, FileAudio, MessageSquare, Zap, ChevronRight,
-  AlignLeft, Play, Clock, Edit3, UserCircle, ChevronDown, ChevronLeft,
-  SlidersHorizontal, CheckSquare, Square, Layers, Link as LinkIcon, Flag, LogOut,
-  Sparkles, Film, ShieldCheck
+  Plus, Layout, Search,
+  CheckCircle2, Circle,
+  Calendar, Tag, Trash2, X, AlertCircle,
+  PlayCircle, User, RefreshCw,
+  FileAudio, MessageSquare,
+  AlignLeft, Clock, Edit3, UserCircle, ChevronDown, ChevronLeft,
+  SlidersHorizontal, Link as LinkIcon
 } from 'lucide-react';
 import type { Task, Assignee, TaskStep, StepStatus, TaskStatus, Priority } from '@/lib/types';
-import { logoutAction } from './auth-actions';
-import { shotTechniques } from '@/lib/shot-techniques';
 
 const PLATFORMS = ['小红书', '抖音', 'B站', '视频号', 'YouTube'];
 
@@ -29,9 +26,12 @@ type ToastMessage = {
 const renderAvatar = (assignee: Assignee, sizeClass = "w-7 h-7") => {
   if (assignee.avatarUrl) {
     return (
-      <img 
+      <Image
         src={assignee.avatarUrl} 
         alt={assignee.name} 
+        width={32}
+        height={32}
+        unoptimized
         className={`${sizeClass} rounded-full object-cover ring-2 ring-white shadow-sm shrink-0`}
         referrerPolicy="no-referrer"
       />
@@ -70,14 +70,12 @@ export function ClientApp({
   initialTasks, 
   assignees,
   currentUser,
-  currentRole,
-  canManageAccess = false
+  currentRole
 }: { 
   initialTasks: Task[], 
   assignees: Assignee[],
   currentUser: Assignee,
-  currentRole: 'admin' | 'member',
-  canManageAccess?: boolean
+  currentRole: 'admin' | 'member'
 }) {
   const [tasks, setTasks] = useState(initialTasks);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(initialTasks[0]?.id || null);
@@ -89,6 +87,12 @@ export function ClientApp({
   const [expandedStep, setExpandedStep] = useState<string | null>(null);
   const [taskFormPending, setTaskFormPending] = useState(false);
   const [deletePending, setDeletePending] = useState(false);
+
+  useEffect(() => {
+    const showTaskList = () => setMobileView('list');
+    window.addEventListener('workspace:show-task-list', showTaskList);
+    return () => window.removeEventListener('workspace:show-task-list', showTaskList);
+  }, []);
 
 
 
@@ -107,6 +111,8 @@ export function ClientApp({
 
   // Sync tasks when initialTasks change from server
   useEffect(() => {
+    // A router refresh replaces the server snapshot; local optimistic updates continue from it.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setTasks(initialTasks);
   }, [initialTasks]);
 
@@ -155,7 +161,7 @@ export function ClientApp({
       const queryStr = newParams.toString();
       router.replace(queryStr ? `/?${queryStr}` : '/');
     }
-  }, [searchParams]);
+  }, [router, searchParams]);
 
   function showToast(message: string, type = 'default', duration = 3000) {
     const id = ++toastCount;
@@ -274,7 +280,7 @@ export function ClientApp({
       } else {
         showToast(`同步失败: ${data.reason || '未知错误'}`, 'error');
       }
-    } catch (err) {
+    } catch {
       removeToast(toastId);
       showToast('网络连接失败，请稍后重试。', 'error');
     }
@@ -460,7 +466,7 @@ export function ClientApp({
       } else {
         showToast(`更新失败: ${errorMessageFromResponse(resData)}`, 'error');
       }
-    } catch (err) {
+    } catch {
       removeToast(toastId);
       showToast('网络连接失败，请稍后重试。', 'error');
     }
@@ -533,7 +539,7 @@ export function ClientApp({
       } else {
         showToast(`保存失败: ${errorMessageFromResponse(resData)}`, 'error');
       }
-    } catch (err) {
+    } catch {
       removeToast(toastId);
       showToast('网络连接失败，请稍后重试。', 'error');
     }
@@ -736,83 +742,7 @@ export function ClientApp({
   };
 
   return (
-    <div className="flex h-screen bg-[#f8fafc] font-sans text-slate-800 overflow-hidden relative pb-[60px] md:pb-0 md:flex-row">
-      
-      {/* Sleek Dark Theme Navigation Sidebar */}
-      <nav className="fixed bottom-0 left-0 right-0 h-[60px] bg-slate-900 border-t border-slate-800 flex flex-row items-center justify-around z-[100] md:relative md:h-screen md:w-16 md:border-t-0 md:border-r md:flex-col md:justify-start md:py-6 shrink-0 shadow-[0_-4px_24px_rgba(15,23,42,0.12)]">
-        
-        {/* Top Logo Container */}
-        <div className="hidden md:flex w-10 h-10 bg-slate-850 text-white rounded-xl flex items-center justify-center shadow-md border border-slate-700 mb-6 shrink-0">
-          <Layers size={18} />
-        </div>
-        
-        {/* Desktop navigation tabs & Mobile Items (Top Grouped) */}
-        <div className="flex flex-row md:flex-col w-full md:w-auto md:px-2 gap-0 md:gap-5 justify-around md:justify-start flex-1 md:flex-none animate-rise">
-          <button 
-            onClick={() => setMobileView('list')}
-            className={`w-12 h-12 md:w-full md:aspect-square flex items-center justify-center rounded-xl transition-all duration-300 active:scale-90 ${mobileView === 'list' || (typeof window !== 'undefined' && window.innerWidth >= 768) ? 'text-white bg-slate-800/80 shadow-inner' : 'text-slate-400 hover:text-slate-200 bg-transparent border-transparent'}`}
-          >
-            <MonitorPlay size={20} />
-          </button>
-
-          {canManageAccess && (
-            <Link
-              href="/admin/access"
-              className="hidden md:flex w-12 h-12 md:w-full md:aspect-square items-center justify-center rounded-xl text-slate-400 transition-all duration-300 hover:bg-slate-800/80 hover:text-white active:scale-90"
-              title="访问权限中心"
-            >
-              <ShieldCheck size={20} />
-            </Link>
-          )}
-
-          {/* Mobile User Profile Avatar (Middle) */}
-          <div className="md:hidden flex items-center justify-center w-12 h-12 relative" title={`${currentUser.name} (${currentUser.role})`}>
-            {renderAvatar(currentUser, "w-6 h-6")}
-          </div>
-
-          {/* Mobile Logout Button (Right) */}
-          <button 
-            onClick={async () => {
-              const toastId = showToast('正在登出...', 'loading', 0);
-              await logoutAction();
-              window.location.href = "/login";
-            }}
-            className="md:hidden w-12 h-12 flex items-center justify-center text-slate-400 hover:text-rose-450 active:scale-90"
-            title="退出登录"
-          >
-            <LogOut size={20} />
-          </button>
-        </div>
-
-        {/* Desktop Bottom Section: User Profile & Logout (Pushed to bottom) */}
-        <div className="hidden md:flex flex-col items-center gap-4 w-full mt-auto shrink-0">
-          {/* Desktop divider line */}
-          <div className="w-8 h-px bg-slate-800/80 my-1 self-center" />
-
-          {/* Desktop User Avatar */}
-          <div className="flex items-center justify-center w-full aspect-square relative group cursor-help shrink-0">
-            {renderAvatar(currentUser, "w-8 h-8")}
-            <div className="absolute left-14 bottom-1/2 translate-y-1/2 bg-slate-900 border border-slate-800 text-white text-[11px] font-semibold py-2.5 px-3.5 rounded-xl opacity-0 pointer-events-none group-hover:opacity-100 transition-opacity duration-200 shadow-[0_12px_36px_rgba(0,0,0,0.4)] whitespace-nowrap z-50">
-              <p className="font-extrabold text-white text-xs">{currentUser.name}</p>
-              <p className="text-slate-400 text-[9px] font-mono mt-0.5 uppercase tracking-wider">{currentRole === 'admin' ? '主编导 (Admin)' : `${currentUser.role} (Member)`}</p>
-            </div>
-          </div>
-
-          {/* Desktop Logout Button (High contrast, clearly visible at bottom) */}
-          <button 
-            onClick={async () => {
-              const toastId = showToast('正在登出...', 'loading', 0);
-              await logoutAction();
-              window.location.href = "/login";
-            }}
-            className="w-10 h-10 flex items-center justify-center rounded-xl hover:bg-rose-950/40 text-slate-400 hover:text-rose-400 transition-all duration-200 active:scale-95 cursor-pointer shrink-0"
-            title="退出登录"
-          >
-            <LogOut size={20} />
-          </button>
-        </div>
-      </nav>
-
+    <div className="relative flex h-full overflow-hidden bg-[#f8fafc] font-sans text-slate-800 md:flex-row">
       {/* Task List Panel */}
       <div className={`${mobileView === 'detail' ? 'hidden md:flex' : 'flex'} w-full md:w-[380px] border-r border-slate-200/80 bg-slate-50/50 flex-col shrink-0 h-full`}>
         <div className="p-5 border-b border-slate-200/60 flex flex-col bg-white shrink-0 gap-3.5 shadow-[0_1px_3px_rgba(15,23,42,0.01)]">
@@ -1138,10 +1068,6 @@ export function ClientApp({
                           ? [step.assigneeId] 
                           : [];
                       
-                      const activeIds = tempAssignees[step.id] !== undefined
-                        ? tempAssignees[step.id]
-                        : currentAssignees;
-
                       const isAuthorizedForStep = currentRole === 'admin' || currentAssignees.includes(currentUser.id);
                       
                       return (
